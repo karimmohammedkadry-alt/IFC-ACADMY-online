@@ -1,0 +1,8 @@
+{
+  "name": "IFC ACADEMY",
+  "description": "نظام برمجي متكامل لإدارة الأكاديميات الرياضية، متابعة اللاعبين، الحضور والغياب، المدفوعات والاشتراكات، والتقارير المالية.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

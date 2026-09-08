@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+@keyframes bellShake {
+  0%, 100% {
+    transform: rotate(0deg);
+  }
+  15% {
+    transform: rotate(14deg);
+  }
+  30% {
+    transform: rotate(-14deg);
+  }
+  45% {
+    transform: rotate(10deg);
+  }
+  60% {
+    transform: rotate(-10deg);
+  }
+  75% {
+    transform: rotate(4deg);
+  }
+  85% {
+    transform: rotate(-4deg);
+  }
+}
+
+.animate-bell-shake {
+  animation: bellShake 1.5s ease-in-out infinite;
+  transform-origin: top center;
+}
+
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    font-family: 'Cairo', system-ui, -apple-system, sans-serif !important;
+    direction: rtl !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide navigation, background panels, floating modals backdrop, etc. when printing */
+  nav,
+  header,
+  aside,
+  button,
+  .no-print,
+  #navbar-main {
+    display: none !important;
+  }
+
+  /* Force print area to take full paper */
+  #ifc-pdf-printable-area,
+  #printable-invoice,
+  #printable-report-area {
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 8mm !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+}
