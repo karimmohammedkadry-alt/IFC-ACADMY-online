@@ -14,6 +14,7 @@ import {
   Users,
   CreditCard,
   Layers,
+  UserCheck,
 } from 'lucide-react';
 import { MonthlyArchiveRecord } from '../types';
 import { formatDateTimeArabic } from '../utils/dateUtils';
@@ -36,17 +37,24 @@ export const MonthlyArchiveModal: React.FC<MonthlyArchiveModalProps> = ({
   const [selectedArchiveId, setSelectedArchiveId] = useState<string>(
     archives[0]?.id || ''
   );
-  const [activeTab, setActiveTab] = useState<'overview' | 'payments' | 'expenses'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'payments' | 'expenses' | 'attendance'>('overview');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   if (!isOpen) return null;
 
   const currentArchive =
     archives.find((a) => a.id === selectedArchiveId) || archives[0];
 
+  const inRange = (date: string) => (!dateFrom || date >= dateFrom) && (!dateTo || date <= dateTo);
+  const filteredPayments = (currentArchive?.payments || []).filter((p) => inRange(p.date || ''));
+  const filteredExpenses = (currentArchive?.expenses || []).filter((e) => inRange(e.date || ''));
+  const filteredAttendance = (currentArchive?.attendance || []).filter((s: any) => inRange(s.date || ''));
+
   const handleExportCsv = () => {
     if (!currentArchive) return;
     const headers = ['رقم السند', 'المستفيد', 'المبلغ', 'طريقة الدفع', 'التاريخ', 'الحالة'];
-    const rows = currentArchive.payments.map((p) => [
+    const rows = filteredPayments.map((p) => [
       p.invoiceNumber,
       p.playerName,
       p.amount,
@@ -167,6 +175,13 @@ export const MonthlyArchiveModal: React.FC<MonthlyArchiveModalProps> = ({
 
             {currentArchive && (
               <>
+                <div className="flex flex-wrap items-end gap-3 p-3 rounded-2xl bg-white/[0.02] border border-white/10">
+                  <div><label className="block text-[10px] text-slate-400 mb-1">من تاريخ</label><input type="date" value={dateFrom} onChange={(e)=>setDateFrom(e.target.value)} className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white" /></div>
+                  <div><label className="block text-[10px] text-slate-400 mb-1">إلى تاريخ</label><input type="date" value={dateTo} onChange={(e)=>setDateTo(e.target.value)} className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white" /></div>
+                  <button onClick={()=>{setDateFrom('');setDateTo('')}} className="px-3 py-2 rounded-lg bg-white/5 text-slate-300 text-xs font-bold">مسح التاريخ</button>
+                  <span className="text-[10px] text-slate-400 mr-auto">نتائج الفترة: {filteredPayments.length} مدفوعات · {filteredExpenses.length} مصروفات · {filteredAttendance.length} حضور/غياب</span>
+                </div>
+
                 {/* Meta info badge */}
                 <div className="flex items-center justify-between text-xs text-slate-400 px-1">
                   <span>
@@ -259,7 +274,17 @@ export const MonthlyArchiveModal: React.FC<MonthlyArchiveModalProps> = ({
                         : 'text-slate-400 hover:text-white hover:bg-white/5'
                     }`}
                   >
-                    سندات القبض المؤرشفة ({currentArchive.payments.length})
+                    سندات القبض المؤرشفة ({filteredPayments.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('attendance')}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      activeTab === 'attendance'
+                        ? 'bg-yellow-400 text-black'
+                        : 'text-slate-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    الحضور والغياب ({filteredAttendance.length})
                   </button>
                   <button
                     onClick={() => setActiveTab('expenses')}
@@ -269,7 +294,7 @@ export const MonthlyArchiveModal: React.FC<MonthlyArchiveModalProps> = ({
                         : 'text-slate-400 hover:text-white hover:bg-white/5'
                     }`}
                   >
-                    المصروفات المؤرشفة ({currentArchive.expenses.length})
+                    المصروفات المؤرشفة ({filteredExpenses.length})
                   </button>
                 </div>
 
@@ -288,14 +313,14 @@ export const MonthlyArchiveModal: React.FC<MonthlyArchiveModalProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5 text-slate-200">
-                        {currentArchive.payments.length === 0 ? (
+                        {filteredPayments.length === 0 ? (
                           <tr>
                             <td colSpan={6} className="p-6 text-center text-slate-400">
                               لا توجد سندات مقبوضات مسجلة في هذا الشهر.
                             </td>
                           </tr>
                         ) : (
-                          currentArchive.payments.map((p) => (
+                          filteredPayments.map((p) => (
                             <tr key={p.id} className="hover:bg-white/[0.02]">
                               <td className="p-3 font-mono font-bold text-yellow-400">
                                 {p.invoiceNumber}
@@ -333,14 +358,14 @@ export const MonthlyArchiveModal: React.FC<MonthlyArchiveModalProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5 text-slate-200">
-                        {currentArchive.expenses.length === 0 ? (
+                        {filteredExpenses.length === 0 ? (
                           <tr>
                             <td colSpan={6} className="p-6 text-center text-slate-400">
                               لا توجد مصروفات مسجلة في هذا الشهر.
                             </td>
                           </tr>
                         ) : (
-                          currentArchive.expenses.map((exp) => (
+                          filteredExpenses.map((exp) => (
                             <tr key={exp.id} className="hover:bg-white/[0.02]">
                               <td className="p-3 font-semibold text-white">{exp.title}</td>
                               <td className="p-3 text-slate-400">{exp.category}</td>
@@ -355,6 +380,13 @@ export const MonthlyArchiveModal: React.FC<MonthlyArchiveModalProps> = ({
                         )}
                       </tbody>
                     </table>
+                  </div>
+                )}
+
+                {activeTab === 'attendance' && (
+                  <div className="rounded-2xl bg-white/[0.02] border border-white/10 overflow-hidden">
+                    <div className="p-4 border-b border-white/10 flex items-center justify-between"><h4 className="text-sm font-bold text-white flex items-center gap-2"><UserCheck className="w-4 h-4 text-blue-400" />سجل الحضور والغياب المؤرشف</h4><span className="text-xs text-slate-400">حاضر: {filteredAttendance.filter((s:any)=>s.status==='حاضر').length} · غائب: {filteredAttendance.filter((s:any)=>s.status==='غائب').length} · بعذر: {filteredAttendance.filter((s:any)=>s.status==='بعذر').length}</span></div>
+                    {filteredAttendance.length === 0 ? <div className="p-8 text-center text-xs text-slate-500">لا توجد سجلات في الفترة المحددة.</div> : <div className="max-h-80 overflow-y-auto"><table className="w-full text-right text-xs"><thead className="sticky top-0 bg-slate-900 text-slate-300"><tr><th className="p-3">التاريخ</th><th className="p-3">اللاعب</th><th className="p-3">الحالة</th><th className="p-3">الحصة</th></tr></thead><tbody className="divide-y divide-white/5">{filteredAttendance.map((a:any,i:number)=><tr key={`${a.id}-${i}`}><td className="p-3 font-mono">{a.date}</td><td className="p-3">{a.playerName || a.player_id || 'لا يوجد'}</td><td className={`p-3 font-bold ${a.status==='غائب'?'text-rose-300':a.status==='بعذر'?'text-amber-300':'text-emerald-300'}`}>{a.status}</td><td className="p-3 text-slate-400">{a.sessionNumber || '—'}</td></tr>)}</tbody></table></div>}
                   </div>
                 )}
 

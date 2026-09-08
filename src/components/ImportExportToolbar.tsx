@@ -37,6 +37,7 @@ export const ImportExportToolbar: React.FC<ImportExportToolbarProps> = ({
     }
 
     setBusy(true);
+    window.dispatchEvent(new CustomEvent('ifc-import-start', { detail: { name: file.name } }));
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {

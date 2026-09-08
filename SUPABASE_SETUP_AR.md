@@ -4,8 +4,8 @@
 لا تضع `SUPABASE_SECRET_KEY` داخل التطبيق أو `.env` الخاص بالواجهة أو GitHub أو ملف EXE. المفتاح السري الذي تم إرساله أثناء المحادثة يجب اعتباره مكشوفًا ويُنصح بتدويره من Supabase Dashboard وإنشاء Secret Key جديد.
 
 التطبيق يستخدم فقط:
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_PUBLISHABLE_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_PUBLISHABLE_KEY`
 
 ## 1) أنشئ مستخدم Supabase Auth
 من Supabase Dashboard → Authentication → Users أنشئ مستخدمًا:

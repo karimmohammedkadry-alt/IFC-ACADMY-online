@@ -39,15 +39,26 @@ export function isExpiringWithinWeek(player: Player): boolean {
  * Calculates end date by adding months to the given start date.
  */
 export function calculateEndDateByMonths(startDateStr: string, months: number): string {
-  if (!startDateStr) {
-    startDateStr = new Date().toISOString().split('T')[0];
+  if (!startDateStr) startDateStr = dateOnlyLocal();
+  const match = String(startDateStr).match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!match) return dateOnlyLocal();
+
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const originalDay = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || !Number.isFinite(originalDay) || monthIndex < 0 || monthIndex > 11) {
+    return dateOnlyLocal();
   }
-  const date = new Date(startDateStr);
-  if (isNaN(date.getTime())) {
-    return new Date().toISOString().split('T')[0];
-  }
-  date.setMonth(date.getMonth() + months);
-  return date.toISOString().split('T')[0];
+
+  // Calendar-safe month addition: Jan 31 + 1 month => Feb 28/29,
+  // rather than overflowing into March. The same rule works for 30/31-day months.
+  const target = new Date(year, monthIndex + Number(months || 0), 1);
+  if (isNaN(target.getTime())) return dateOnlyLocal();
+  const targetYear = target.getFullYear();
+  const targetMonth = target.getMonth();
+  const daysInTargetMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
+  const safeDay = Math.min(Math.max(originalDay, 1), daysInTargetMonth);
+  return `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(safeDay).padStart(2, '0')}`;
 }
 
 /**

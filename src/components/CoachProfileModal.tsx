@@ -14,7 +14,7 @@ import {
   Save,
   Check,
 } from 'lucide-react';
-import { Coach, PaymentRecord } from '../types';
+import { Coach, PaymentRecord, MonthlyArchiveRecord } from '../types';
 import { formatDateTimeArabic } from '../utils/dateUtils';
 
 interface CoachProfileModalProps {
@@ -26,6 +26,7 @@ interface CoachProfileModalProps {
   onPaySalary: (coachId: string) => void;
   onDeleteCoach: (coachId: string) => void;
   isAmountsVisible?: boolean;
+  monthlyArchives?: MonthlyArchiveRecord[];
 }
 
 export const CoachProfileModal: React.FC<CoachProfileModalProps> = ({
@@ -37,6 +38,7 @@ export const CoachProfileModal: React.FC<CoachProfileModalProps> = ({
   onPaySalary,
   onDeleteCoach,
   isAmountsVisible = true,
+  monthlyArchives = [],
 }) => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -71,7 +73,10 @@ export const CoachProfileModal: React.FC<CoachProfileModalProps> = ({
         p.playerName.trim().toLowerCase() === coach.name.trim().toLowerCase())
   );
 
-  const totalPaidSalaries = coachPayments.reduce((sum, p) => sum + p.amount, 0);
+  const archivedCoachPayments = monthlyArchives.flatMap((a) => (a.payments || []).filter((p) => p.type === 'راتب مدرب' && (p.coachId === coach.id || p.playerId === coach.id || (p.playerName || '').trim().toLowerCase() === coach.name.trim().toLowerCase())).map((p) => ({ ...p, __month: a.monthLabel })));
+  const archivedCoachExpenses = monthlyArchives.flatMap((a) => (a.expenses || []).filter((e) => e.coachId === coach.id).map((e) => ({ ...e, __month: a.monthLabel })));
+  const allCoachPayments = [...coachPayments, ...archivedCoachPayments.filter((ap) => !coachPayments.some((p) => p.id === ap.id))];
+  const totalPaidSalaries = allCoachPayments.reduce((sum, p) => sum + p.amount, 0);
   const currentMonthKey = new Date().toISOString().slice(0, 7);
   const paidThisMonth = coachPayments.filter((p) => p.date?.startsWith(currentMonthKey)).reduce((sum, p) => sum + p.amount, 0);
   const salaryDueThisMonth = Math.max(0, coach.monthlySalary || 0);
@@ -391,6 +396,16 @@ export const CoachProfileModal: React.FC<CoachProfileModalProps> = ({
           <div className="p-3.5 rounded-xl bg-purple-500/[0.05] border border-purple-500/15"><div className="text-[11px] text-slate-400">الراتب المستحق هذا الشهر</div><div className="text-lg font-black text-purple-300 font-mono mt-1">{formatMoney(salaryDueThisMonth)}</div></div>
           <div className="p-3.5 rounded-xl bg-emerald-500/[0.05] border border-emerald-500/15"><div className="text-[11px] text-slate-400">الراتب المدفوع هذا الشهر</div><div className="text-lg font-black text-emerald-400 font-mono mt-1">{formatMoney(paidThisMonth)}</div></div>
           <div className="p-3.5 rounded-xl bg-amber-500/[0.05] border border-amber-500/15"><div className="text-[11px] text-slate-400">المتبقي هذا الشهر</div><div className="text-lg font-black text-amber-400 font-mono mt-1">{formatMoney(salaryRemainingThisMonth)}</div></div>
+        </div>
+
+        <div className="mb-5 p-4 rounded-xl bg-amber-500/[0.04] border border-amber-500/15">
+          <h4 className="text-xs font-bold text-white mb-3 flex items-center gap-2"><Calendar className="w-4 h-4 text-amber-400" /><span>السجل المؤرشف للمدرب</span></h4>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs mb-3">
+            <div className="p-2 rounded-lg bg-white/[0.03]"><span className="text-slate-400">رواتب مؤرشفة</span><div className="font-bold text-emerald-400 mt-1">{archivedCoachPayments.length}</div></div>
+            <div className="p-2 rounded-lg bg-white/[0.03]"><span className="text-slate-400">إجمالي الرواتب المؤرشفة</span><div className="font-bold text-purple-300 mt-1">{formatMoney(archivedCoachPayments.reduce((s,p)=>s+p.amount,0))}</div></div>
+            <div className="p-2 rounded-lg bg-white/[0.03]"><span className="text-slate-400">مصروفات مرتبطة بالمدرب</span><div className="font-bold text-rose-300 mt-1">{archivedCoachExpenses.length}</div></div>
+          </div>
+          {archivedCoachExpenses.length > 0 ? <div className="max-h-24 overflow-y-auto text-[10px] text-slate-300 space-y-1">{archivedCoachExpenses.map((e,i)=><div key={`${e.id}-${i}`} className="flex justify-between border-b border-white/5 pb-1"><span>{e.date} · {e.title} · {e.__month}</span><span className="text-rose-300">{formatMoney(e.amount)}</span></div>)}</div> : null}
         </div>
 
         {/* Salary History */}

@@ -2,6 +2,7 @@ import { initializeLocalDatabase } from './services/localDb.ts';
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+import { AppErrorBoundary } from './components/AppErrorBoundary';
 import './index.css';
 
 void initializeLocalDatabase().catch((error) => console.error('Local database initialization failed:', error));
@@ -18,7 +19,7 @@ if (typeof window !== 'undefined') {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <AppErrorBoundary><App /></AppErrorBoundary>
   </StrictMode>,
 );
 

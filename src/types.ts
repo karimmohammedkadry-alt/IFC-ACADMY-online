@@ -8,7 +8,8 @@ export type PageTab =
   | 'finance' 
   | 'reports' 
   | 'coaches' 
-  | 'settings';
+  | 'settings'
+  | 'trash';
 
 export type PaymentMethod = 'كاش' | 'فودافون كاش' | 'بطاقة ائتمانية' | 'إنستاباي' | 'تحويل بنكي';
 
@@ -150,6 +151,11 @@ export interface MonthlyArchiveRecord {
   overduePlayersCount?: number;
   payments?: PaymentRecord[];
   expenses?: ExpenseRecord[];
+  attendance?: SessionRecord[];
+  attendanceCount?: number;
+  presentCount?: number;
+  absentCount?: number;
+  excusedCount?: number;
   notes?: string;
 }
 

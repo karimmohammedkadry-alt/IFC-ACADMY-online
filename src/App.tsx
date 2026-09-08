@@ -23,6 +23,8 @@ import { NewFinancialActionModal } from './components/NewFinancialActionModal';
 import { PlayerProfileModal } from './components/PlayerProfileModal';
 import { CoachProfileModal } from './components/CoachProfileModal';
 import { UnifiedNotificationsModal } from './components/UnifiedNotificationsModal';
+import { TrashView } from './components/TrashView';
+import { ImportProgressOverlay, emptyImportProgress, ImportProgress } from './components/ImportProgressOverlay';
 import { ExportPdfModal, ExportPdfMode } from './components/ExportPdfModal';
 import { MonthlyArchiveModal } from './components/MonthlyArchiveModal';
 import { isExpiringWithin3Days, isExpiringWithinWeek, isOverdueOrExpired } from './utils/dateUtils';
@@ -71,6 +73,8 @@ import {
   checkDatabaseStatus,
   fetchMonthlyArchives,
   createMonthlyArchiveApi,
+  appendHistoricalArchiveRecordsApi,
+  finalizeMonthlyRollover,
   loginAdmin,
   validateAdminSession,
   refreshAdminSession,
@@ -84,6 +88,11 @@ import {
   restoreNotificationApi,
   deleteNotificationPermanentlyApi,
   clearNotificationsApi,
+  fetchRecycleBin,
+  restoreRecycleBinItem,
+  permanentlyDeleteRecycleBinItem,
+  emptyRecycleBin,
+  emptyNotificationTrash,
 } from './services/api';
 
 import { syncDatabaseSnapshot, scheduleDatabaseSnapshot } from './services/localDb';
@@ -151,7 +160,7 @@ const toNumber = (value: any, fallback = 0): number => {
 
 const IMPORT_CONCURRENCY = 8;
 
-async function runImportTasks<T>(tasks: Array<() => Promise<T>>, concurrency = IMPORT_CONCURRENCY): Promise<PromiseSettledResult<T>[]> {
+async function runImportTasks<T>(tasks: Array<() => Promise<T>>, concurrency = IMPORT_CONCURRENCY, onSettled?: (index:number,result:PromiseSettledResult<T>) => void): Promise<PromiseSettledResult<T>[]> {
   const results: PromiseSettledResult<T>[] = new Array(tasks.length);
   let cursor = 0;
   const worker = async () => {
@@ -160,6 +169,7 @@ async function runImportTasks<T>(tasks: Array<() => Promise<T>>, concurrency = I
       if (index >= tasks.length) return;
       try { results[index] = { status: 'fulfilled', value: await tasks[index]() }; }
       catch (reason) { results[index] = { status: 'rejected', reason }; }
+      onSettled?.(index, results[index]);
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
@@ -176,6 +186,8 @@ const DEFAULT_ADMIN_USER = {
 export default function App() {
   // Loading -> Login -> System Home
   const [currentTab, setCurrentTab] = useState<PageTab>('loading');
+  const [trashItems, setTrashItems] = useState<any[]>([]);
+  const [importProgress, setImportProgress] = useState<ImportProgress>(emptyImportProgress());
 
   // Privacy: Eye toggle for sensitive money amounts
   const [isAmountsVisible, setIsAmountsVisible] = useState(true);
@@ -237,7 +249,7 @@ export default function App() {
       if (navigator.onLine) { try { await syncCloud(); } catch (e) { console.warn('Cloud sync before read failed:', e); } }
       setDbError(null);
 
-      const [statusRes, playersRes, paymentsRes, expensesRes, coachesRes, settingsRes, archivesRes] =
+      const [statusRes, playersRes, paymentsRes, expensesRes, coachesRes, settingsRes, archivesRes, trashRes] =
         await Promise.allSettled([
           checkDatabaseStatus(),
           fetchPlayers(),
@@ -246,6 +258,7 @@ export default function App() {
           fetchCoaches(),
           fetchSettings(),
           fetchMonthlyArchives(),
+          fetchRecycleBin(),
         ]);
 
       const isConnected =
@@ -270,6 +283,7 @@ export default function App() {
       if (archivesRes.status === 'fulfilled' && Array.isArray(archivesRes.value)) {
         setMonthlyArchives(archivesRes.value);
       }
+      if (trashRes.status === 'fulfilled' && Array.isArray(trashRes.value)) setTrashItems(trashRes.value);
     } catch (err: any) {
       console.error('Error fetching data from backend:', err);
       setIsDbConnected(false);
@@ -372,6 +386,12 @@ export default function App() {
   const [isActionChooserOpen, setIsActionChooserOpen] = useState(false);
   const [selectedCoachIdForSalary, setSelectedCoachIdForSalary] = useState<string | undefined>();
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const startImportProgress = (title:string,total:number,initialSkipped=0) => setImportProgress({open:true,title,total,processed:0,saved:0,skipped:initialSkipped,failed:0,message:'جاري قراءة وحفظ البيانات بدون إيقاف الواجهة...',errors:[],startedAt:Date.now(),lastUpdate:Date.now(),done:false});
+  const tickImportProgress = (patch:Partial<ImportProgress>) => setImportProgress(prev=>({...prev,...patch,lastUpdate:Date.now()}));
+  const finishImportProgress = (message:string, errors:string[] = []) => { setImportProgress(prev=>({...prev,open:true,done:true,message,errors,lastUpdate:Date.now()})); window.setTimeout(()=>setImportProgress(prev=>({...prev,open:false})),3500); };
+  const refreshTrash = async () => { try { setTrashItems(await fetchRecycleBin()); } catch(e) { console.error('Failed to load recycle bin:',e); } };
+  useEffect(() => { const onStart = (e:Event) => { const name=(e as CustomEvent).detail?.name||'ملف الاستيراد'; setImportProgress(prev=>prev.open?prev:{...emptyImportProgress(),open:true,title:`جاري تجهيز ${name}`,message:'يتم قراءة الملف في الخلفية لتجنب تجميد الصفحة...',startedAt:Date.now(),lastUpdate:Date.now()}); }; window.addEventListener('ifc-import-start',onStart); return()=>window.removeEventListener('ifc-import-start',onStart); }, []);
+
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [notificationTrash, setNotificationTrash] = useState<AppNotification[]>([]);
   const [systemToast, setSystemToast] = useState<{ open: boolean; type: SystemToastType; title: string; message?: string }>({ open: false, type: 'success', title: '' });
@@ -721,7 +741,7 @@ export default function App() {
             const createdPay = await createPaymentApi(autoPayment);
             setPayments((prev) => [createdPay, ...prev]);
           } catch (e) {
-            try { await deletePlayerApi(created.id); } catch (rollbackError) { console.error('Player rollback failed after payment failure:', rollbackError); }
+            try { await deletePlayerApi(created.id, true); } catch (rollbackError) { console.error('Player rollback failed after payment failure:', rollbackError); }
             throw new Error(`تم إنشاء اللاعب لكن تعذر حفظ دفعة الاشتراك، لذلك تم التراجع عن إنشاء اللاعب: ${e instanceof Error ? e.message : 'خطأ غير معروف'}`);
           }
         }
@@ -760,6 +780,7 @@ export default function App() {
       try {
         const deleted = players.find((p) => p.id === playerId);
         await deletePlayerApi(playerId);
+        await refreshTrash();
         setPlayers((prev) => prev.filter((p) => p.id !== playerId));
         if (deleted) {
           logAudit({
@@ -770,18 +791,6 @@ export default function App() {
             details: `رقم العضوية: ${deleted.memberNumber}`,
           });
 
-          const notif = createNotification(
-            'player_deleted',
-            'تم حذف لاعب - موجود في سلة المهملات',
-            `تم حذف اللاعب (${deleted.name}) من سجلات الأكاديمية. يمكنك استعادته من سلة المهملات.`,
-            'players',
-            { playerId: deleted.id, playerName: deleted.name, memberNumber: deleted.memberNumber, deletedPlayer: deleted }
-          );
-          // Deleted-player records go directly to the Messages Trash so they do not pollute the active feed.
-          const trash = getNotificationTrash();
-          saveNotificationTrash([notif, ...trash.filter((n) => n.id !== notif.id)]);
-          void upsertNotificationApi(notif, true).catch(console.error);
-          setNotificationTrash(getNotificationTrash());
           soundAlertManager.playAlertTone();
         }
       } catch (err) {
@@ -803,7 +812,7 @@ export default function App() {
           });
         }
       } catch (playerError) {
-        try { await deletePaymentApi(created.id); } catch (rollbackError) { console.error('Payment rollback failed:', rollbackError); }
+        try { await deletePaymentApi(created.id, true); } catch (rollbackError) { console.error('Payment rollback failed:', rollbackError); }
         throw playerError;
       }
       setPayments((prev) => [created, ...prev]);
@@ -862,7 +871,7 @@ export default function App() {
         await updateCoachApi(coachId, { lastSalaryPaidMonth: month });
       } catch (stepError) {
         try { if (createdPay) await deletePaymentApi(createdPay.id); } catch (rollbackError) { console.error('Salary payment rollback failed:', rollbackError); }
-        try { await deleteExpenseApi(createdExp.id); } catch (rollbackError) { console.error('Salary expense rollback failed:', rollbackError); }
+        try { await deleteExpenseApi(createdExp.id, true); } catch (rollbackError) { console.error('Salary expense rollback failed:', rollbackError); }
         throw stepError;
       }
       if (!createdPay) throw new Error('تعذر تأكيد دفعة الراتب.');
@@ -895,6 +904,12 @@ export default function App() {
     }
   };
 
+  const handleDeletePayment = async (id:string) => {
+    if (!confirm('هل تريد نقل سند الدفع إلى سلة المهملات؟ يمكنك استرجاعه لاحقًا.')) return;
+    try { const deleted=payments.find(p=>p.id===id); await deletePaymentApi(id); setPayments(prev=>prev.filter(p=>p.id!==id)); await refreshTrash(); if(deleted) showToast('success','تم نقل السند للسلة',`تم نقل إيصال ${deleted.invoiceNumber || deleted.playerName} إلى سلة المهملات.`); }
+    catch(e){showToast('error','تعذر حذف السند',e instanceof Error?e.message:'حدث خطأ أثناء الحذف.');}
+  };
+
   // Add General Expense in local SQLite
   const handleSaveExpense = async (expense: ExpenseRecord) => {
     try {
@@ -918,6 +933,7 @@ export default function App() {
     if (confirm('هل أنت متأكد من حذف هذا المصروف؟')) {
       try {
         await deleteExpenseApi(id);
+        await refreshTrash();
         setExpenses((prev) => prev.filter((e) => e.id !== id));
       } catch (err) {
         console.error('Failed to delete expense:', err);
@@ -986,6 +1002,7 @@ export default function App() {
     const deleted = coaches.find((c) => c.id === id);
     try {
       await deleteCoachApi(id);
+      await refreshTrash();
       setCoaches((prev) => prev.filter((c) => c.id !== id));
       if (selectedCoachForProfile?.id === id) setSelectedCoachForProfile(null);
 
@@ -1041,109 +1058,105 @@ export default function App() {
     return result;
   };
 
-  // Start New Month cycle handler - Archives current financial data, resets counters, and prompts archive
+  // Monthly cycle: archive the completed month, then clear only that month's
+  // financial/attendance records. Historical data remains inside monthly_archives.
   const handleStartNewMonth = async (isAutomatic = false) => {
     try {
       const now = new Date();
       const currentYm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-      const monthLabel = now.toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' });
+      const previousDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const previousYm = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, '0')}`;
 
-      // Gather payments and expenses for this cycle
-      const cyclePayments = payments.filter((p) => !p.date || p.date.startsWith(currentYm));
-      const cycleExpenses = expenses.filter((e) => !e.date || e.date.startsWith(currentYm));
+      // Automatic rollover closes the month that just ended. Manual rollover
+      // closes the currently selected/current month.
+      const targetMonth = isAutomatic ? previousYm : currentYm;
+      const targetDate = new Date(`${targetMonth}-01T12:00:00`);
+      const targetLabel = targetDate.toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' });
 
-      const paymentsToArchive = cyclePayments.length > 0 ? cyclePayments : payments;
-      const expensesToArchive = cycleExpenses.length > 0 ? cycleExpenses : expenses;
-
-      const totalIncome = paymentsToArchive.reduce((s, p) => s + p.amount, 0);
-      const totalExpenses = expensesToArchive.reduce((s, e) => s + e.amount, 0);
+      const targetPayments = payments.filter((p) => String(p.date || '').slice(0, 7) === targetMonth);
+      const targetExpenses = expenses.filter((e) => String(e.date || '').slice(0, 7) === targetMonth);
+      const targetAttendance = players.flatMap((p) => (p.sessions || []).filter((s) => String(s.date || '').slice(0, 7) === targetMonth).map((s) => ({ ...s, playerId: p.id, playerName: p.name, memberNumber: p.memberNumber })));
+      const presentCount = targetAttendance.filter((s) => s.status === 'حاضر').length;
+      const absentCount = targetAttendance.filter((s) => s.status === 'غائب').length;
+      const excusedCount = targetAttendance.filter((s) => s.status === 'بعذر').length;
       const activeCount = players.filter((p) => p.status === 'نشط').length;
       const overdueCount = players.filter((p) => isOverdueOrExpired(p)).length;
+      const totalIncome = targetPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const totalExpenses = targetExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
 
-      // Create new monthly archive record
-      const newArchive: MonthlyArchiveRecord = {
-        id: `arch-${Date.now()}`,
-        monthKey: currentYm,
-        monthLabel,
+      const alreadyArchived = monthlyArchives.some((a) => a.monthKey === targetMonth);
+      if (alreadyArchived && isAutomatic) {
+        // The previous month was already safely closed; do not delete anything twice.
+        return;
+      }
+
+      const archive: MonthlyArchiveRecord = {
+        id: `arch-${targetMonth}`,
+        monthKey: targetMonth,
+        monthLabel: targetLabel,
         archivedAt: new Date().toISOString(),
         archivedBy: currentUser.name,
         totalIncome,
         totalExpenses,
         netProfit: totalIncome - totalExpenses,
-        paymentsCount: paymentsToArchive.length,
-        expensesCount: expensesToArchive.length,
+        paymentsCount: targetPayments.length,
+        expensesCount: targetExpenses.length,
         activePlayersCount: activeCount,
         overduePlayersCount: overdueCount,
-        payments: paymentsToArchive,
-        expenses: expensesToArchive,
+        payments: targetPayments,
+        expenses: targetExpenses,
+        attendance: targetAttendance,
+        attendanceCount: targetAttendance.length,
+        presentCount,
+        absentCount,
+        excusedCount,
         notes: isAutomatic
-          ? `تمت الأرشفة التلقائية الدورية أول يوم من الشهر`
-          : `تمت الأرشفة وتصفير الدورة بواسطة ${currentUser.name}`,
+          ? `أرشفة تلقائية لشهر ${targetLabel} ثم تصفير معاملاته لبدء دورة ${now.toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' })}.`
+          : `تمت أرشفة شهر ${targetLabel} وتصفير معاملاته بواسطة ${currentUser.name}.`,
       };
 
-      try {
-        await createMonthlyArchiveApi(newArchive);
-        setMonthlyArchives([newArchive, ...monthlyArchives.filter((a) => a.monthKey !== currentYm)]);
-      } catch (e) {
-        console.error('Failed to persist archive to database:', e);
-        if (!isAutomatic) showToast('error', 'تعذر حفظ الأرشيف', e instanceof Error ? e.message : 'فشل حفظ الأرشيف في قاعدة البيانات، ولم يتم إكمال الدورة.');
-        return;
-      }
+      // Save archive first. If saving fails, current data is untouched.
+      await createMonthlyArchiveApi(archive);
+      setMonthlyArchives((prev) => [archive, ...prev.filter((a) => a.monthKey !== targetMonth)]);
 
-      let expiredCount = 0;
-      const statusErrors: string[] = [];
-      const updatedPlayers = await Promise.all(
-        players.map(async (p) => {
-          if (isOverdueOrExpired(p) && p.status !== 'متأخر') {
-            expiredCount++;
-            try {
-              await updatePlayerApi(p.id, { status: 'متأخر' });
-            } catch (e) {
-              statusErrors.push(p.name);
-              console.error(`Failed to update status for player ${p.name}:`, e);
-              return p;
-            }
-            return { ...p, status: 'متأخر' as const };
-          }
-          return p;
-        })
-      );
+      // Now remove only the archived month from the active tables and reset counters.
+      await finalizeMonthlyRollover([targetMonth]);
 
-      setPlayers(updatedPlayers);
-      if (statusErrors.length) showToast('error', 'تعذر تحديث بعض الاشتراكات', `فشل تحديث ${statusErrors.length} لاعب بعد حفظ الأرشيف.`);
+      const [latestPlayers, latestPayments, latestExpenses, latestCoaches] = await Promise.all([
+        fetchPlayers(),
+        fetchPayments(),
+        fetchExpenses(),
+        fetchCoaches(),
+      ]);
+      setPlayers(latestPlayers);
+      setPayments(latestPayments);
+      setExpenses(latestExpenses);
+      setCoaches(latestCoaches);
 
       logAudit({
         userId: 'system',
         userName: currentUser.name,
-        action: 'أرشفة الدورة وتصفير العداد الشهري تلقائياً',
+        action: 'أرشفة الدورة الشهرية وتصفير المالية والحضور',
         category: 'مالية',
-        details: `أرشيف شهر ${monthLabel}: إيرادات ${totalIncome} ج.م - مصروفات ${totalExpenses} ج.م - ترحيل ${expiredCount} اشتراكات متأخرة`,
-      });
-
-      sendDesktopNotification({
-        title: 'الأرشفة الشهرية التلقائية',
-        body: `تم أرشفة بيانات شهر ${monthLabel} تلقائياً وتصفير العداد المالي بإجمالي إيرادات ${totalIncome.toLocaleString()} ج.م ومصروفات ${totalExpenses.toLocaleString()} ج.م.`,
-        playSound: true,
-        soundType: 'cash',
+        details: `أرشيف ${targetLabel}: إيرادات ${totalIncome} ج.م - مصروفات ${totalExpenses} ج.م - حضور ${presentCount} - غياب ${absentCount} - بعذر ${excusedCount}`,
       });
 
       const notif = createNotification(
         'subscription_overdue',
-        'أرشفة وتصفير العداد الشهري تلقائياً',
-        `تمت أرشفة دورة ${monthLabel} تلقائياً وتصفير العدادات للدورة الجديدة ونقل السجلات إلى الأرشيف.`,
+        'تم إغلاق الدورة الشهرية',
+        `تم حفظ أرشيف ${targetLabel} بالكامل (المالية والمدفوعات والحضور والغياب) وبدء دورة جديدة.`,
         'system'
       );
       pushNotification(notif);
-      soundAlertManager.playCashRegisterTone();
 
       if (!isAutomatic) {
         setIsMonthlyArchiveModalOpen(true);
-        showToast('success', 'تمت أرشفة الشهر', `تمت أرشفة بيانات ${monthLabel} وتصفير العدادات وفتح سجل الأرشيف.`);
+        showToast('success', 'تمت الأرشفة والتصفير', `تم حفظ ${targetLabel} في الأرشيف وتصفير المالية والمدفوعات والحضور والغياب.`);
       }
     } catch (err) {
       console.error('Error starting new month:', err);
       if (!isAutomatic) {
-        showToast('error', 'تعذر بدء الدورة الجديدة', 'حدث خطأ أثناء أرشفة الشهر وتصفير العدادات.');
+        showToast('error', 'تعذر إغلاق الدورة', err instanceof Error ? err.message : 'لم يتم تصفير البيانات حتى لا نفقد أي سجل.');
       }
     }
   };
@@ -1156,6 +1169,7 @@ export default function App() {
       if (!list?.length) return showToast('error', 'ملف الاستيراد فارغ', 'لم يتم العثور على صفوف لاعبين صالحة.');
 
       // Read once so a large Excel file gets one deterministic membership sequence.
+      startImportProgress('استيراد اللاعبين', list.length);
       const existingPlayers = await fetchPlayers();
       const generatedNumbers = new Set(existingPlayers.map(p => String(p.memberNumber || '').trim().toUpperCase()).filter(Boolean));
       const firstGenerated = generateNextMemberNumber(existingPlayers);
@@ -1216,22 +1230,30 @@ export default function App() {
         });
       }
       let saved = 0, updated = 0, paymentCount = 0;
+      tickImportProgress({processed:skipped,skipped,message:`تم تجهيز ${playersToImport.length} لاعب للاستيراد، وتم تخطي ${skipped} صف.`});
       // Send manageable chunks. بيانات الاستيراد تُحفظ مباشرة في SQLite المحلية.
       for (let i = 0; i < playersToImport.length; i += 500) {
-        const result = await bulkImportPlayersApi(playersToImport.slice(i, i + 500), currentUser.name);
+        const chunk = playersToImport.slice(i, i + 500);
+        const result = await bulkImportPlayersApi(chunk, currentUser.name);
         saved += result.saved || 0; updated += result.updated || 0; paymentCount += result.payments || 0;
-        if (playersToImport.length > 500) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        tickImportProgress({processed:Math.min(playersToImport.length,i+chunk.length),saved,skipped,failed:0,message:`تم حفظ ${Math.min(playersToImport.length,i+chunk.length)} من ${playersToImport.length} لاعب.`});
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
       const [latestPlayers, latestPayments] = await Promise.all([fetchPlayers(), fetchPayments()]);
       setPlayers(latestPlayers);
       setPayments(latestPayments);
       if (saved || updated) soundAlertManager.playSuccessTone();
-      showToast('success', 'تم استيراد اللاعبين بسرعة', `تم حفظ ${playersToImport.length} لاعب. جديد/محدّث: ${saved}/${updated}. تم تسجيل ${paymentCount} اشتراك مالي تلقائيًا. تم تخطي ${skipped} صف.`);
+      finishImportProgress(`تم الاستيراد: ${saved + updated} من ${list.length} صف. تم تخطي ${skipped} صف.`);
+      showToast('success', 'تم استيراد اللاعبين بسرعة', `تم حفظ ${saved + updated} من أصل ${list.length} صف. جديد/محدّث: ${saved}/${updated}. تم تخطي ${skipped} صف.`);
     } catch (err) {
       console.error('Failed to bulk import players:', err);
+      finishImportProgress(`فشل الاستيراد: ${err instanceof Error ? err.message : 'خطأ غير معروف'}`, [err instanceof Error ? err.message : 'خطأ غير معروف']);
       showToast('error', 'تعذر استيراد اللاعبين', err instanceof Error ? err.message : 'حدث خطأ أثناء الاستيراد.');
     }
   };
+
+  const currentMonthKey = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
+  const groupByMonth = <T extends {date:string}>(rows:T[]) => rows.reduce<Record<string,T[]>>((acc,row)=>{ const m=String(row.date||'').slice(0,7); if(/^\d{4}-\d{2}$/.test(m)){(acc[m] ||= []).push(row);} return acc; },{});
 
   // Import Payments from Excel with Arabic + English headers.
   const handleImportPayments = async (importedData: any) => {
@@ -1240,7 +1262,9 @@ export default function App() {
       if (!list || list.length === 0) return showToast('error', 'ملف المدفوعات فارغ', 'لم يتم العثور على سندات دفع صالحة.');
       let skipped = 0;
       const errors: string[] = [];
+      startImportProgress('استيراد المدفوعات', list.length);
       const tasks: Array<() => Promise<string>> = [];
+      const historicalPayments: PaymentRecord[] = [];
       for (let index = 0; index < list.length; index++) {
         const item = list[index] || {};
         const amountRaw = importField(item, ['amount', 'المبلغ', 'قيمة الدفع', 'قيمة الاشتراك', 'قيمة الاشتراك (ج.م)']);
@@ -1264,22 +1288,31 @@ export default function App() {
           notes: toText(importField(item, ['notes', 'ملاحظات'])),
           collectedBy: toText(importField(item, ['collectedBy', 'collected_by', 'المحصل', 'بواسطة'])) || currentUser.name,
         };
+        if (payment.date.slice(0,7) !== currentMonthKey()) historicalPayments.push(payment);
         tasks.push(async () => {
+          if (payment.date.slice(0,7) !== currentMonthKey()) {
+            return payment.playerName;
+          }
           await createPaymentApi(payment);
           return payment.playerName;
         });
       }
-      const results = await runImportTasks(tasks);
+      tickImportProgress({processed:skipped,skipped,message:`تم تجهيز ${tasks.length} سجل للحفظ، وتم تخطي ${skipped}.`});
+      const results = await runImportTasks(tasks, IMPORT_CONCURRENCY, (_index, result) => { setImportProgress(prev=>{ const processed=prev.processed+1; const failed=prev.failed+(result.status==='rejected'?1:0); return {...prev,processed,failed,saved:Math.max(0,processed-skipped-failed),message:`تمت معالجة ${processed} من ${list.length} سند.`,lastUpdate:Date.now()}; }); });
       const count = results.filter((r) => r.status === 'fulfilled').length;
       results.forEach((r, i) => {
         if (r.status === 'rejected') errors.push(`تعذر حفظ سند الدفع رقم ${i + 2}: ${r.reason instanceof Error ? r.reason.message : 'خطأ غير معروف'}`);
       });
+      const historicalGroups = groupByMonth(historicalPayments);
+      for (const [month, rows] of Object.entries(historicalGroups)) await appendHistoricalArchiveRecordsApi(month, rows);
       await loadDatabaseData();
       if (count) soundAlertManager.playCashRegisterTone();
       if (errors.length) console.warn('Payment import row errors:', errors);
+      finishImportProgress(`تم الاستيراد: ${count} من ${list.length} سند. تخطي ${skipped}، أخطاء ${errors.length}.`, errors);
       showToast(errors.length ? 'error' : 'success', errors.length ? 'اكتمل الاستيراد مع وجود أخطاء' : 'تم استيراد المدفوعات بنجاح', `تم حفظ ${count} سند. تم تخطي ${skipped} صف، وفشل ${errors.length} صف.`);
     } catch (err) {
       console.error('Failed to import payments:', err);
+      finishImportProgress(`تعذر الاستيراد: ${err instanceof Error ? err.message : 'خطأ غير معروف'}`,[err instanceof Error ? err.message : 'خطأ غير معروف']);
       showToast('error', 'تعذر استيراد المدفوعات', err instanceof Error ? err.message : 'حدث خطأ أثناء الاستيراد.');
     }
   };
@@ -1291,7 +1324,9 @@ export default function App() {
       if (!list || list.length === 0) return showToast('error', 'ملف المصروفات فارغ', 'لم يتم العثور على مصروفات صالحة.');
       let skipped = 0;
       const errors: string[] = [];
+      startImportProgress('استيراد المصروفات', list.length);
       const tasks: Array<() => Promise<string>> = [];
+      const historicalExpenses: ExpenseRecord[] = [];
       for (let index = 0; index < list.length; index++) {
         const item = list[index] || {};
         const amountRaw = importField(item, ['amount', 'المبلغ', 'قيمة المصروف', 'قيمة المصروف (ج.م)']);
@@ -1308,22 +1343,29 @@ export default function App() {
           method: (toText(importField(item, ['method', 'paymentMethod', 'payment_method', 'طريقة الدفع'])) || 'كاش') as PaymentMethod,
           notes: toText(importField(item, ['notes', 'ملاحظات'])),
         };
+        if (expense.date.slice(0,7) !== currentMonthKey()) historicalExpenses.push(expense);
         tasks.push(async () => {
+          if (expense.date.slice(0,7) !== currentMonthKey()) return expense.title;
           await createExpenseApi(expense);
           return expense.title;
         });
       }
-      const results = await runImportTasks(tasks);
+      tickImportProgress({processed:skipped,skipped,message:`تم تجهيز ${tasks.length} سجل للحفظ، وتم تخطي ${skipped}.`});
+      const results = await runImportTasks(tasks, IMPORT_CONCURRENCY, (_index, result) => { setImportProgress(prev=>{ const processed=prev.processed+1; const failed=prev.failed+(result.status==='rejected'?1:0); return {...prev,processed,failed,saved:Math.max(0,processed-skipped-failed),message:`تمت معالجة ${processed} من ${list.length} مصروف.`,lastUpdate:Date.now()}; }); });
       const count = results.filter((r) => r.status === 'fulfilled').length;
       results.forEach((r, i) => {
         if (r.status === 'rejected') errors.push(`تعذر حفظ المصروف رقم ${i + 2}: ${r.reason instanceof Error ? r.reason.message : 'خطأ غير معروف'}`);
       });
+      const historicalGroups = groupByMonth(historicalExpenses);
+      for (const [month, rows] of Object.entries(historicalGroups)) await appendHistoricalArchiveRecordsApi(month, [], rows);
       await loadDatabaseData();
       if (count) soundAlertManager.playSuccessTone();
       if (errors.length) console.warn('Expense import row errors:', errors);
+      finishImportProgress(`تم الاستيراد: ${count} من ${list.length} مصروف. تخطي ${skipped}، أخطاء ${errors.length}.`, errors);
       showToast(errors.length ? 'error' : 'success', errors.length ? 'اكتمل الاستيراد مع وجود أخطاء' : 'تم استيراد المصروفات بنجاح', `تم حفظ ${count} مصروف. تم تخطي ${skipped} صف، وفشل ${errors.length} صف.`);
     } catch (err) {
       console.error('Failed to import expenses:', err);
+      finishImportProgress(`تعذر الاستيراد: ${err instanceof Error ? err.message : 'خطأ غير معروف'}`,[err instanceof Error ? err.message : 'خطأ غير معروف']);
       showToast('error', 'تعذر استيراد المصروفات', err instanceof Error ? err.message : 'حدث خطأ أثناء الاستيراد.');
     }
   };
@@ -1334,6 +1376,7 @@ export default function App() {
     try {
       const list = Array.isArray(importedData) ? importedData : Array.isArray(importedData?.coaches) ? importedData.coaches : null;
       if (!list?.length) return showToast('error', 'ملف المدربين فارغ', 'لم يتم العثور على صفوف مدربين صالحة.');
+      startImportProgress('استيراد المدربين', list.length);
       const coachesToImport: Coach[] = [];
       let skipped = 0;
       for (let index = 0; index < list.length; index++) {
@@ -1358,16 +1401,20 @@ export default function App() {
       }
       let saved = 0;
       for (let i = 0; i < coachesToImport.length; i += 500) {
-        const result = await bulkImportCoachesApi(coachesToImport.slice(i, i + 500));
+        const chunk = coachesToImport.slice(i, i + 500);
+        const result = await bulkImportCoachesApi(chunk);
         saved += result.saved || 0;
-        if (coachesToImport.length > 500) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        tickImportProgress({processed:Math.min(coachesToImport.length,i+chunk.length),saved,skipped,message:`تم حفظ ${Math.min(coachesToImport.length,i+chunk.length)} من ${coachesToImport.length} مدرب.`});
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
       const latestCoaches = await fetchCoaches();
       setCoaches(latestCoaches);
       if (saved) soundAlertManager.playSuccessTone();
-      showToast('success', 'تم استيراد المدربين بسرعة', `تم حفظ ${saved} مدرب. تم تخطي ${skipped} صف.`);
+      finishImportProgress(`تم الاستيراد: ${saved} من ${list.length} صف. تخطي ${skipped}.`);
+      showToast('success', 'تم استيراد المدربين بسرعة', `تم حفظ ${saved} من أصل ${list.length} صف. تم تخطي ${skipped} صف.`);
     } catch (err) {
       console.error('Failed to bulk import coaches:', err);
+      finishImportProgress(`تعذر الاستيراد: ${err instanceof Error ? err.message : 'خطأ غير معروف'}`,[err instanceof Error ? err.message : 'خطأ غير معروف']);
       showToast('error', 'تعذر استيراد المدربين', err instanceof Error ? err.message : 'حدث خطأ أثناء الاستيراد.');
     }
   };
@@ -1377,7 +1424,9 @@ export default function App() {
     const list = Array.isArray(importedData) ? importedData : Array.isArray(importedData?.attendance) ? importedData.attendance : null;
     if (!list?.length) return showToast('error', 'ملف الحضور فارغ', 'لم يتم العثور على سجلات حضور صالحة.');
     let count = 0, skipped = 0;
+    startImportProgress('استيراد الحضور والغياب', list.length);
     const errors: string[] = [];
+    const historicalAttendance: any[] = [];
     let latestPlayers = players;
     try { latestPlayers = await fetchPlayers(); } catch { /* use current UI state if offline */ }
     for (let index = 0; index < list.length; index++) {
@@ -1399,27 +1448,39 @@ export default function App() {
       const status = (rawStatus === 'حاضر' || rawStatus === 'بعذر' ? rawStatus : 'غائب') as 'حاضر' | 'غائب' | 'بعذر';
       const sessionId = toText(importField(row, ['id', 'sessionId', 'session_id', 'المعرف الداخلي للجلسة'])) || `sess-imp-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`;
       try {
-        await updateSessionAttendanceApi(playerId, sessionId, status, toText(importField(row, ['notes', 'ملاحظات'])), date);
+        const player = latestPlayers.find(p=>p.id===playerId);
+        const record = { id:sessionId, playerId, playerName:player?.name || playerName || 'لا يوجد', memberNumber:player?.memberNumber || member || 'لا يوجد', date, status, notes:toText(importField(row, ['notes', 'ملاحظات'])) };
+        if (date.slice(0,7) !== currentMonthKey()) historicalAttendance.push(record);
+        else await updateSessionAttendanceApi(playerId, sessionId, status, record.notes, date);
         count++;
       } catch (e) { errors.push(`الصف ${index + 2}: ${e instanceof Error ? e.message : 'خطأ غير معروف'}`); }
+      if ((index+1)%25===0 || index===list.length-1) tickImportProgress({processed:index+1,saved:count,skipped,failed:errors.length,message:`تمت معالجة ${index+1} من ${list.length} سجل حضور.`});
     }
+    const historicalAttendanceGroups = groupByMonth(historicalAttendance);
+    for (const [month, rows] of Object.entries(historicalAttendanceGroups)) await appendHistoricalArchiveRecordsApi(month, [], [], rows);
     await loadDatabaseData();
+    finishImportProgress(`تم الاستيراد: ${count} من ${list.length} سجل حضور. تخطي ${skipped}، أخطاء ${errors.length}.`, errors);
     showToast(errors.length ? 'error' : 'success', errors.length ? 'اكتمل استيراد الحضور مع أخطاء' : 'تم استيراد الحضور بنجاح', `تم حفظ ${count} سجل حضور. تم تخطي ${skipped} صف، وفشل ${errors.length} صف.`);
   };
 
-  // Automatic rollover check at the beginning of each calendar month
+  // Automatic rollover check. It runs on load and periodically so leaving the
+  // application open across midnight/month-end cannot skip the archive.
   useEffect(() => {
     if (players.length === 0) return;
-    const now = new Date();
-    const currentYm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const lastActiveMonth = localStorage.getItem('ifc_last_active_month');
-
-    if (lastActiveMonth && lastActiveMonth !== currentYm) {
-      localStorage.setItem('ifc_last_active_month', currentYm);
-      handleStartNewMonth(true);
-    } else if (!lastActiveMonth) {
-      localStorage.setItem('ifc_last_active_month', currentYm);
-    }
+    const checkMonthBoundary = () => {
+      const now = new Date();
+      const currentYm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const lastActiveMonth = localStorage.getItem('ifc_last_active_month');
+      if (lastActiveMonth && lastActiveMonth !== currentYm) {
+        localStorage.setItem('ifc_last_active_month', currentYm);
+        void handleStartNewMonth(true);
+      } else if (!lastActiveMonth) {
+        localStorage.setItem('ifc_last_active_month', currentYm);
+      }
+    };
+    checkMonthBoundary();
+    const timer = window.setInterval(checkMonthBoundary, 60_000);
+    return () => window.clearInterval(timer);
   }, [players.length]);
 
   // Export all academy data as a real Excel workbook (Arabic headers; import accepts Arabic + English).
@@ -1518,6 +1579,16 @@ export default function App() {
       throw err;
     }
   };
+
+  const handleRestoreTrash = async (item:any) => {
+    try { await restoreRecycleBinItem(item.id); await loadDatabaseData(); await refreshTrash(); showToast('success','تم الاسترجاع',`تم استرجاع ${item.label || 'العنصر'} بنجاح.`); }
+    catch(e){ showToast('error','تعذر الاسترجاع',e instanceof Error?e.message:'حدث خطأ أثناء الاسترجاع.'); }
+  };
+  const handlePermanentTrash = async (item:any) => {
+    try { await permanentlyDeleteRecycleBinItem(item.id); await refreshTrash(); showToast('success','تم الحذف النهائي','تم حذف العنصر نهائيًا من سلة المهملات.'); }
+    catch(e){ showToast('error','تعذر الحذف النهائي',e instanceof Error?e.message:'حدث خطأ أثناء الحذف النهائي.'); }
+  };
+  const handleEmptyTrash = async () => { if(!confirm('سيتم حذف جميع عناصر سلة المهملات نهائيًا. لا يمكن التراجع. هل أنت متأكد؟'))return; try{await emptyRecycleBin();await emptyNotificationTrash();setNotificationTrash([]);await refreshTrash();showToast('success','تم إفراغ السلة','تم حذف العناصر نهائيًا.');}catch(e){showToast('error','تعذر إفراغ السلة',e instanceof Error?e.message:'حدث خطأ.');} };
 
   // Logout handler
   const handleLogout = async () => {
@@ -1708,6 +1779,7 @@ export default function App() {
               }}
               onOpenActionChooser={() => setIsActionChooserOpen(true)}
               onPreviewInvoice={(pay) => setActiveInvoice(pay)}
+              onDeletePayment={handleDeletePayment}
               onExportReports={() => setCurrentTab('reports')}
               onImportPayments={handleImportPayments}
               isAmountsVisible={isAmountsVisible}
@@ -1764,6 +1836,19 @@ export default function App() {
             />
           )}
 
+          {currentTab === 'trash' && (
+            <TrashView
+              items={trashItems}
+              notificationItems={notificationTrash}
+              onRestore={handleRestoreTrash}
+              onPermanentDelete={handlePermanentTrash}
+              onEmpty={handleEmptyTrash}
+              onRestoreNotification={handleRestoreNotification}
+              onPermanentDeleteNotification={async (id) => handleDeleteTrashPermanently(id)}
+              onRefresh={async () => { await loadDatabaseData(); await refreshTrash(); setNotificationTrash(await fetchNotificationTrash()); }}
+            />
+          )}
+
           {currentTab === 'settings' && (
             <SettingsView
               settings={settings}
@@ -1809,6 +1894,7 @@ export default function App() {
           setIsAddPaymentModalOpen(true);
         }}
         isAmountsVisible={isAmountsVisible}
+        monthlyArchives={monthlyArchives}
       />
 
       {/* 3. Add / Edit Player Modal */}
@@ -1908,6 +1994,7 @@ export default function App() {
         }}
         onDeleteCoach={handleDeleteCoach}
         isAmountsVisible={isAmountsVisible}
+        monthlyArchives={monthlyArchives}
       />
 
       {/* 11. Monthly Archive Modal */}
@@ -1918,6 +2005,7 @@ export default function App() {
         onTriggerNewMonthArchive={handleStartNewMonth}
         currency={settings.currency || 'ج.م'}
       />
+      <ImportProgressOverlay progress={importProgress} onRestart={() => window.location.reload()} />
       <SystemToast open={systemToast.open} type={systemToast.type} title={systemToast.title} message={systemToast.message} onClose={() => setSystemToast((prev) => ({ ...prev, open: false }))} />
     </div>
   );
