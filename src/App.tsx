@@ -1230,14 +1230,60 @@ export default function App() {
         });
       }
       let saved = 0, updated = 0, paymentCount = 0;
+      const importedPlayerPayments: PaymentRecord[] = [];
       tickImportProgress({processed:skipped,skipped,message:`تم تجهيز ${playersToImport.length} لاعب للاستيراد، وتم تخطي ${skipped} صف.`});
       // Send manageable chunks. بيانات الاستيراد تُحفظ مباشرة في SQLite المحلية.
       for (let i = 0; i < playersToImport.length; i += 500) {
         const chunk = playersToImport.slice(i, i + 500);
         const result = await bulkImportPlayersApi(chunk, currentUser.name);
         saved += result.saved || 0; updated += result.updated || 0; paymentCount += result.payments || 0;
+
+        // Excel subscription value is a real collection: create a payment for every
+        // imported player whose fee is > 0, and also place the same record in the
+        // monthly archive so the player's profile/history and archive show it.
+        for (const player of chunk) {
+          const fee = Number(player.monthlyFee || 0);
+          if (!(fee > 0)) continue;
+          const fresh = (await fetchPlayers()).find((x) => x.memberNumber === player.memberNumber);
+          if (!fresh) continue;
+          const paymentDate = player.subscriptionStartDate && /^\d{4}-\d{2}-\d{2}$/.test(player.subscriptionStartDate)
+            ? player.subscriptionStartDate
+            : new Date().toISOString().slice(0, 10);
+          const pay: PaymentRecord = {
+            id: `pay-imp-player-${fresh.id}-${paymentDate}`,
+            invoiceNumber: `INV-IMP-${fresh.id}-${paymentDate}`,
+            type: 'اشتراك لاعب',
+            playerId: fresh.id,
+            playerName: fresh.name,
+            memberNumber: fresh.memberNumber,
+            team: fresh.team,
+            amount: fee,
+            method: (fresh.paymentMethod && fresh.paymentMethod !== 'لا يوجد' ? fresh.paymentMethod : 'كاش') as PaymentMethod,
+            date: paymentDate,
+            createdAt: new Date().toISOString(),
+            periodMonth: paymentDate.slice(0, 7),
+            coverageStart: fresh.subscriptionStartDate,
+            coverageEnd: fresh.subscriptionEndDate,
+            durationMonths: 1,
+            dueAmount: fee,
+            remainingAmount: 0,
+            status: 'مدفوع',
+            notes: 'سداد اشتراك مستورد من ملف Excel',
+            collectedBy: currentUser.name,
+          };
+          const createdPay = await createPaymentApi(pay);
+          importedPlayerPayments.push(createdPay);
+          paymentCount += 1;
+        }
         tickImportProgress({processed:Math.min(playersToImport.length,i+chunk.length),saved,skipped,failed:0,message:`تم حفظ ${Math.min(playersToImport.length,i+chunk.length)} من ${playersToImport.length} لاعب.`});
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      // Keep imported collections in the monthly archive immediately as well.
+      // The archive merge is ID-based, so the normal month-end rollover will not
+      // duplicate these records later.
+      if (importedPlayerPayments.length) {
+        const grouped = groupByMonth(importedPlayerPayments);
+        for (const [month, rows] of Object.entries(grouped)) await appendHistoricalArchiveRecordsApi(month, rows);
       }
       const [latestPlayers, latestPayments] = await Promise.all([fetchPlayers(), fetchPayments()]);
       setPlayers(latestPlayers);
@@ -1400,12 +1446,66 @@ export default function App() {
         });
       }
       let saved = 0;
+      const importedCoachPayments: PaymentRecord[] = [];
+      const importedCoachExpenses: ExpenseRecord[] = [];
       for (let i = 0; i < coachesToImport.length; i += 500) {
         const chunk = coachesToImport.slice(i, i + 500);
         const result = await bulkImportCoachesApi(chunk);
         saved += result.saved || 0;
+
+        // A salary/amount written in the Excel coach row is treated as an actual
+        // salary transaction: expense + payment record + archive history.
+        for (const coach of chunk) {
+          const salary = Number(coach.monthlySalary || 0);
+          if (!(salary > 0)) continue;
+          const salaryDate = coach.joinDate && /^\d{4}-\d{2}-\d{2}$/.test(coach.joinDate)
+            ? coach.joinDate
+            : new Date().toISOString().slice(0, 10);
+          const expense: ExpenseRecord = {
+            id: `exp-imp-coach-${coach.id}-${salaryDate}`,
+            title: 'راتب مدرب - مستورد من Excel',
+            category: 'رواتب مدربين',
+            amount: salary,
+            date: salaryDate,
+            paidTo: coach.name,
+            coachId: coach.id,
+            method: 'كاش',
+            notes: 'راتب/قيمة مستوردة من ملف Excel',
+          };
+          const savedExpense = await createExpenseApi(expense);
+          importedCoachExpenses.push(savedExpense);
+          const payment: PaymentRecord = {
+            id: `pay-imp-coach-${coach.id}-${salaryDate}`,
+            invoiceNumber: `SAL-IMP-${coach.id}-${salaryDate}`,
+            type: 'راتب مدرب',
+            playerId: coach.id,
+            playerName: coach.name,
+            coachId: coach.id,
+            amount: salary,
+            method: 'كاش',
+            date: salaryDate,
+            createdAt: new Date().toISOString(),
+            periodMonth: salaryDate.slice(0, 7),
+            dueAmount: salary,
+            remainingAmount: 0,
+            status: 'مدفوع',
+            notes: 'راتب/قيمة مستوردة من ملف Excel',
+            collectedBy: currentUser.name,
+          };
+          const savedPayment = await createPaymentApi(payment);
+          importedCoachPayments.push(savedPayment);
+          await updateCoachApi(coach.id, { lastSalaryPaidMonth: salaryDate.slice(0, 7) });
+        }
         tickImportProgress({processed:Math.min(coachesToImport.length,i+chunk.length),saved,skipped,message:`تم حفظ ${Math.min(coachesToImport.length,i+chunk.length)} من ${coachesToImport.length} مدرب.`});
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      if (importedCoachPayments.length || importedCoachExpenses.length) {
+        const groupedPayments = groupByMonth(importedCoachPayments);
+        const groupedExpenses = groupByMonth(importedCoachExpenses);
+        const months = new Set([...Object.keys(groupedPayments), ...Object.keys(groupedExpenses)]);
+        for (const month of months) {
+          await appendHistoricalArchiveRecordsApi(month, groupedPayments[month] || [], groupedExpenses[month] || []);
+        }
       }
       const latestCoaches = await fetchCoaches();
       setCoaches(latestCoaches);

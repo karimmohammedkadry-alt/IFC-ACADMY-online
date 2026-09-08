@@ -1,13 +1,9 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { getDb, nowIso } from './localDb';
 
-declare const __IFC_SUPABASE_URL__: string;
-declare const __IFC_SUPABASE_PUBLISHABLE_KEY__: string;
-declare const __IFC_SUPABASE_AUTH_EMAIL__: string;
-
-const URL = __IFC_SUPABASE_URL__ || undefined;
-const KEY = __IFC_SUPABASE_PUBLISHABLE_KEY__ || undefined;
-const AUTH_EMAIL = __IFC_SUPABASE_AUTH_EMAIL__ || undefined;
+const URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
+const AUTH_EMAIL = import.meta.env.VITE_SUPABASE_AUTH_EMAIL as string | undefined;
 const META_ID = 1;
 const TABLES = ['players','player_sessions','payments','expenses','coaches','academy_settings','monthly_archives','recycle_bin','app_notifications'];
 let client: SupabaseClient | null = null;
