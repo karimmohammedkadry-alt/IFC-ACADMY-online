@@ -16,6 +16,7 @@ export function isCloudSyncConfigured(){ return configured(); }
 export function isNetworkError(error:any){ const status=Number(error?.status||error?.statusCode||0); const msg=String(error?.message||'').toLowerCase(); return !status || /network|fetch|failed to fetch|offline|load failed|timeout|connection/.test(msg); }
 function getClient(){ if(!configured()) return null; if(!client)client=createClient(URL!,KEY!,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}}); return client; }
 export async function getCloudAuthUser(){const sb=getClient();if(!sb)return null;const {data,error}=await sb.auth.getUser();if(error)throw error;return data.user||null;}
+export async function getCloudSession(){const sb=getClient();if(!sb)return{session:null};const {data,error}=await sb.auth.getSession();if(error)throw error;return{session:data.session};}
 export async function cloudLogin(password:string){const sb=getClient();if(!sb||!AUTH_EMAIL)throw new Error('Supabase Auth غير مُعد.');const {data,error}=await sb.auth.signInWithPassword({email:AUTH_EMAIL,password});if(error)throw error;return data.session;}
 export async function cloudLogout(){const sb=getClient();if(sb)await sb.auth.signOut();}
 export async function updateCloudUsername(username:string){const sb=getClient();if(!sb)return;const {error}=await sb.auth.updateUser({data:{username:username.trim()}});if(error)throw error;}

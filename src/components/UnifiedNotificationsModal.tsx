@@ -72,12 +72,9 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
 
   if (!isOpen) return null;
 
-  // Filter notifications based on active tab
+  // Unified inbox: every notification category is intentionally merged into 'الكل'. Only 'سلة المهملات' is a separate view.
   const filteredNotifications = notifications.filter((notif) => {
-    let matchesTab = true;
-    // All notification types/categories are intentionally shown together in the single 'الكل' tab.
-    if (activeFilter === 'trash') matchesTab = false;
-    if (!matchesTab) return false;
+    if (activeFilter === 'trash') return false;
     const q = normalizeSearchText(searchQuery);
     if (!q) return true;
     const player = notif.meta?.playerId ? players.find((p) => p.id === notif.meta?.playerId) : undefined;
@@ -195,7 +192,7 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
           </button>
         </div>
 
-        {/* Filter Tabs / Categories */}
+        {/* Unified inbox tabs: only All + Trash */}
         <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-3 scrollbar-none shrink-0 text-xs">
           <button
             type="button"
@@ -222,14 +219,14 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
             <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/20">{notificationTrash.length}</span>
           </button>
 
-          {/* Clean / Clear Actions */}
+          {/* Active inbox actions */}
           <div className="mr-auto flex items-center gap-1">
             {notifications.length > 0 && (
               <button
                 type="button"
                 onClick={onClearAll}
                 className="text-[11px] text-slate-400 hover:text-rose-400 px-2 py-1 rounded-lg hover:bg-rose-500/10 transition-colors flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                title="مسح كافة الإشعارات المسجلة"
+                title="مسح الإشعارات من الوارد"
               >
                 <Trash2 className="w-3 h-3" />
                 <span className="hidden sm:inline">مسح السجل</span>

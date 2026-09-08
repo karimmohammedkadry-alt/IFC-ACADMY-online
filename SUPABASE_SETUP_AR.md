@@ -30,7 +30,7 @@
 
 ## 4) كلمة المرور
 كلمة مرور المدير لا تُخزن في Supabase Cloud State ولا يتم إرسال hash المحلي إليها.
-تغيير كلمة المرور من إعدادات البرنامج يتطلب الإنترنت عند تفعيل Supabase حتى يتم تحديث Supabase Auth والـSQLite معًا. إذا كان البرنامج Offline فلن يسمح بتغيير كلمة المرور، حتى لا يصبح هناك اختلاف بين المحلي والسحابي.
+تغيير كلمة المرور يمكن أن يتم Online أو Offline. Online يتم تحديث Supabase Auth والـSQLite معًا. Offline يتم تحديث SQLite فورًا وتُحفظ عملية التغيير في طابور مشفر، ثم تُرسل إلى Supabase Auth تلقائيًا عند عودة الإنترنت.
 
 ## 5) لا تستخدم Secret Key
 `SUPABASE_SECRET_KEY` لا يوضع في React/Vite/Tauri client. لو احتجنا لاحقًا عمليات إدارية server-side، تكون في Edge Function أو backend فقط.

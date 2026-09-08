@@ -38,7 +38,16 @@ export async function loginAdmin(username:string,password:string){
       const user={...DEFAULT_USER,username:cloudUsername};
       return {token:session.access_token,access_token:session.access_token,refresh_token:session.refresh_token,expires_at:session.expires_at,user};
     }catch(error:any){
-      if(!isNetworkError(error))throw new Error(error?.message||'بيانات الدخول غير صحيحة.');
+      if(!isNetworkError(error)){
+        const msg=String(error?.message||'').toLowerCase();
+        if(msg.includes('invalid login credentials')){
+          throw new Error('Supabase Auth رفض بيانات الدخول. تأكد من وجود المستخدم admin@ifc.academy في Authentication > Users وأن كلمة المرور السحابية مطابقة لكلمة المرور الحالية. لا يتم الرجوع للقاعدة المحلية أثناء وجود اتصال حتى لا يتجاوز الدخول السحابي.');
+        }
+        if(msg.includes('email not confirmed')){
+          throw new Error('حساب Supabase Auth غير مؤكد. افتح Authentication > Users ثم أكّد مستخدم admin@ifc.academy أو عطّل تأكيد البريد لهذا المستخدم.');
+        }
+        throw new Error(error?.message||'تعذر تسجيل الدخول إلى Supabase Auth.');
+      }
     }
   }
   if(!local||entered!==String(local.username).toLowerCase()||!(await verifyPassword(password,local.password_hash,local.password_salt)))throw new Error('بيانات الدخول غير صحيحة');
@@ -52,7 +61,19 @@ export async function validateAdminSession(token:string){
   }
   const valid=Boolean(token&&localStorage.getItem(AUTH_TOKEN_KEY)===token&&cached);return valid?{authenticated:true,user:cached,offline:true}:{authenticated:false,networkError:false};
 }
-export async function refreshAdminSession(refreshToken:string){const u=getSessionUser();if(!u||refreshToken!==localStorage.getItem(AUTH_TOKEN_KEY))throw new Error('جلسة الدخول غير صالحة');return{access_token:refreshToken,refresh_token:refreshToken,expires_at:Math.floor(Date.now()/1000)+60*60*24*30,user:u};}
+export async function refreshAdminSession(refreshToken:string){
+  const u=getSessionUser();
+  if(!u||!refreshToken)throw new Error('جلسة الدخول غير صالحة');
+  if(navigator.onLine&&isCloudSyncConfigured()){
+    const cloud=await import('./supabaseCloud');
+    const session=(await cloud.getCloudSession()).session;
+    if(!session)throw new Error('جلسة Supabase غير موجودة.');
+    return{access_token:session.access_token,refresh_token:session.refresh_token,expires_at:session.expires_at,user:u};
+  }
+  const token=localStorage.getItem(AUTH_TOKEN_KEY)||crypto.randomUUID();
+  localStorage.setItem(AUTH_TOKEN_KEY,token);
+  return{access_token:token,refresh_token:token,expires_at:Math.floor(Date.now()/1000)+60*60*24*30,user:u};
+}
 export async function logoutAdmin(_token:string){try{await cloudLogout();}catch{}localStorage.removeItem(AUTH_TOKEN_KEY);localStorage.removeItem(AUTH_SESSION_KEY);localStorage.removeItem('ifc_admin_refresh_token');}
 export async function updateAdminCredentials(username:string,newPassword:string,currentPassword=''){requireSession();if(!username.trim())throw new Error('اسم المستخدم مطلوب');if(newPassword.length<6)throw new Error('كلمة المرور يجب أن تكون 6 أحرف/أرقام على الأقل');if(isCloudSyncConfigured()&&!currentPassword)throw new Error('اكتب كلمة المرور الحالية حتى يمكن مزامنة تغيير الباسورد بأمان.');if(isCloudSyncConfigured())await changeCloudPassword(currentPassword,newPassword,username.trim(),true);const db=await getDb();const h=await hashPassword(newPassword);await db.execute('UPDATE admin_credentials SET username=?,password_hash=?,password_salt=?,updated_at=? WHERE id=1',[username.trim(),h.hash,h.salt,nowIso()]);const user={...DEFAULT_USER,username:username.trim()};saveLocalSession(user);return{success:true,user,username:user.username};}
 export async function checkDatabaseStatus(){ requireSession(); await ensureSettings(); const db=await getDb(); const r=await db.select<any[]>('SELECT COUNT(*) AS c FROM players'); return {connected:true,type:'SQLite (Local)',academyName:(await fetchSettings()).academyName,playerCount:r[0]?.c||0}; }

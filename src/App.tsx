@@ -45,6 +45,7 @@ import {
 import { soundAlertManager } from './utils/soundAlert';
 import { sendDesktopNotification } from './utils/desktopNotifier';
 import { AppNotification } from './types';
+import { generateNextMemberNumber } from './utils/memberNumberUtils';
 
 import {
   fetchPlayers,
@@ -1147,47 +1148,71 @@ export default function App() {
     }
   };
 
-  // Import Players from Excel. Data is written directly to local SQLite.
+  // Import Players from Excel. Missing text/date fields become 'لا يوجد'.
+  // Membership numbers are NEVER imported from Excel: they are generated sequentially.
   const handleImportPlayers = async (importedData: any) => {
     try {
       const list = Array.isArray(importedData) ? importedData : Array.isArray(importedData?.players) ? importedData.players : null;
       if (!list?.length) return showToast('error', 'ملف الاستيراد فارغ', 'لم يتم العثور على صفوف لاعبين صالحة.');
+
+      // Read once so a large Excel file gets one deterministic membership sequence.
+      const existingPlayers = await fetchPlayers();
+      const generatedNumbers = new Set(existingPlayers.map(p => String(p.memberNumber || '').trim().toUpperCase()).filter(Boolean));
+      const firstGenerated = generateNextMemberNumber(existingPlayers);
+      const firstMatch = firstGenerated.match(/^IFC-(\d+)$/i);
+      let nextMemberSequence = firstMatch ? Number(firstMatch[1]) : 1;
+      const nextSequentialMember = () => {
+        // One deterministic sequence for the entire import batch. Excel's membership
+        // column is intentionally ignored so imported players always receive fresh IDs.
+        let candidate = `IFC-${String(nextMemberSequence).padStart(3, '0')}`;
+        while (generatedNumbers.has(candidate.toUpperCase())) {
+          nextMemberSequence += 1;
+          candidate = `IFC-${String(nextMemberSequence).padStart(3, '0')}`;
+        }
+        generatedNumbers.add(candidate.toUpperCase());
+        nextMemberSequence += 1;
+        return candidate;
+      };
+
+      const missing = 'لا يوجد';
       const playersToImport: Player[] = [];
       let skipped = 0;
       for (let index = 0; index < list.length; index++) {
         const item = list[index] || {};
-        const name = toText(importField(item, ['name', 'playerName', 'اسم اللاعب بالكامل', 'اسم اللاعب', 'الاسم', 'اللاعب']));
-        if (!name) { skipped++; continue; }
-        const today = new Date().toISOString().split('T')[0];
-        const start = toDateString(importField(item, ['subscriptionStartDate', 'subscription_start_date', 'تاريخ بداية الاشتراك', 'بداية الاشتراك']), today);
-        const end = toDateString(importField(item, ['subscriptionEndDate', 'subscription_end_date', 'subscriptionExpiry', 'subscription_expiry', 'تاريخ نهاية الاشتراك', 'نهاية الاشتراك']), start);
+        const name = toText(importField(item, ['name', 'playerName', 'اسم اللاعب بالكامل', 'اسم اللاعب', 'الاسم', 'اللاعب'])) || missing;
+        const start = toDateString(importField(item, ['subscriptionStartDate', 'subscription_start_date', 'تاريخ بداية الاشتراك', 'بداية الاشتراك']), missing);
+        const end = toDateString(importField(item, ['subscriptionEndDate', 'subscription_end_date', 'subscriptionExpiry', 'subscription_expiry', 'تاريخ نهاية الاشتراك', 'نهاية الاشتراك']), missing);
         const feeRaw = importField(item, ['monthlyFee', 'monthly_fee', 'قيمة الاشتراك الشهري', 'قيمة الاشتراك الشهري (ج.م)', 'قيمة الاشتراك']);
+        const startOrToday = start === missing ? missing : start;
+        const endOrMissing = end === missing ? missing : end;
+        const paymentMethodRaw = toText(importField(item, ['paymentMethod', 'payment_method', 'طريقة الدفع']));
+        const statusRaw = toText(importField(item, ['status', 'الحالة']));
         playersToImport.push({
-          id: toText(importField(item, ['id', 'playerId'])) || '',
-          memberNumber: toText(importField(item, ['memberNumber', 'member_number', 'رقم العضوية', 'رقم العضويه', 'كود اللاعب', 'كود العضوية'])),
+          id: '',
+          memberNumber: nextSequentialMember(),
           name,
-          nationalId: toNationalId(importField(item, ['nationalId', 'national_id', 'الرقم القومي', 'الرقم القومي (14 رقم)'])),
-          birthDate: toText(importField(item, ['birthDate', 'birth_date', 'تاريخ الميلاد'])),
-          notes: toText(importField(item, ['notes', 'ملاحظات'])) || 'مستورد من Excel',
-          avatarUrl: toText(importField(item, ['avatarUrl', 'avatar_url', 'الصورة'])),
-          team: toText(importField(item, ['team', 'group', 'الفئة', 'المجموعة', 'المجموعة / الفئة'])) || 'براعم U-10',
-          sport: toText(importField(item, ['sport', 'الرياضة'])) || 'كيك بوكسينغ',
+          nationalId: toNationalId(importField(item, ['nationalId', 'national_id', 'الرقم القومي', 'الرقم القومي (14 رقم)'])) || missing,
+          birthDate: toDateString(importField(item, ['birthDate', 'birth_date', 'تاريخ الميلاد']), missing),
+          notes: toText(importField(item, ['notes', 'ملاحظات'])) || missing,
+          avatarUrl: toText(importField(item, ['avatarUrl', 'avatar_url', 'الصورة'])) || missing,
+          team: toText(importField(item, ['team', 'group', 'الفئة', 'المجموعة', 'المجموعة / الفئة'])) || missing,
+          sport: toText(importField(item, ['sport', 'الرياضة'])) || missing,
           trainingSchedule: [],
-          subscriptionStartDate: start,
-          subscriptionEndDate: end,
-          totalSessions: toNumber(importField(item, ['totalSessions', 'total_sessions', 'إجمالي الحصص']), 8),
-          attendedSessions: toNumber(importField(item, ['attendedSessions', 'attended_sessions', 'الحصص الحاضرة'])),
-          absentSessions: toNumber(importField(item, ['absentSessions', 'absent_sessions', 'الحصص الغائبة'])),
-          attendanceRate: toNumber(importField(item, ['attendanceRate', 'attendance_rate', 'نسبة الحضور'])),
+          subscriptionStartDate: startOrToday,
+          subscriptionEndDate: endOrMissing,
+          totalSessions: toNumber(importField(item, ['totalSessions', 'total_sessions', 'إجمالي الحصص']), 0),
+          attendedSessions: toNumber(importField(item, ['attendedSessions', 'attended_sessions', 'الحصص الحاضرة']), 0),
+          absentSessions: toNumber(importField(item, ['absentSessions', 'absent_sessions', 'الحصص الغائبة']), 0),
+          attendanceRate: toNumber(importField(item, ['attendanceRate', 'attendance_rate', 'نسبة الحضور']), 0),
           sessions: [],
-          phone: toText(importField(item, ['phone', 'playerPhone', 'رقم هاتف اللاعب', 'هاتف اللاعب'])),
-          parentPhone: toText(importField(item, ['parentPhone', 'parent_phone', 'رقم ولي الأمر', 'رقم ولي الامر', 'رقم ولي الأمر (واتساب)'])),
-          subscriptionPlan: toText(importField(item, ['subscriptionPlan', 'subscription_plan', 'مدة الاشتراك', 'خطة الاشتراك'])) || 'شهري',
-          monthlyFee: toNumber(feeRaw, 500),
-          paymentMethod: (toText(importField(item, ['paymentMethod', 'payment_method', 'طريقة الدفع'])) || 'كاش') as PaymentMethod,
-          subscriptionExpiry: end,
-          status: (toText(importField(item, ['status', 'الحالة'])) || 'نشط') as Player['status'],
-          joinDate: toDateString(importField(item, ['joinDate', 'join_date', 'تاريخ الانضمام']), start),
+          phone: toText(importField(item, ['phone', 'playerPhone', 'رقم هاتف اللاعب', 'هاتف اللاعب'])) || missing,
+          parentPhone: toText(importField(item, ['parentPhone', 'parent_phone', 'رقم ولي الأمر', 'رقم ولي الامر', 'رقم ولي الأمر (واتساب)'])) || missing,
+          subscriptionPlan: toText(importField(item, ['subscriptionPlan', 'subscription_plan', 'مدة الاشتراك', 'خطة الاشتراك'])) || missing,
+          monthlyFee: toNumber(feeRaw, 0),
+          paymentMethod: (paymentMethodRaw || missing) as PaymentMethod,
+          subscriptionExpiry: endOrMissing,
+          status: (statusRaw || missing) as Player['status'],
+          joinDate: toDateString(importField(item, ['joinDate', 'join_date', 'تاريخ الانضمام']), missing),
         });
       }
       let saved = 0, updated = 0, paymentCount = 0;

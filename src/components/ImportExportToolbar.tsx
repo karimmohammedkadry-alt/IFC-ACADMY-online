@@ -19,7 +19,7 @@ export const ImportExportToolbar: React.FC<ImportExportToolbarProps> = ({
   exportLabel = 'تصدير البيانات (Excel)',
   importLabel = 'استيراد ملف Excel',
   exportTitle = 'تصدير ملف البيانات إلى جهازك بصيغة إكسيل عربية',
-  importTitle = 'استيراد بيانات من ملف Excel (.xlsx, .xls)',
+  importTitle = 'استيراد بيانات من Excel أو CSV (.xlsx, .xls, .xlsm, .csv)',
   className = '',
   preferredSheets = [],
 }) => {
@@ -30,8 +30,8 @@ export const ImportExportToolbar: React.FC<ImportExportToolbarProps> = ({
     const file = e.target.files?.[0];
     if (!file || busy) return;
     const lowerName = file.name.toLowerCase();
-    if (!lowerName.endsWith('.xlsx') && !lowerName.endsWith('.xls')) {
-      notifyToast('error', 'صيغة غير مدعومة', 'الاستيراد متاح لملفات Excel فقط (.xlsx أو .xls).');
+    if (!lowerName.endsWith('.xlsx') && !lowerName.endsWith('.xls') && !lowerName.endsWith('.xlsm') && !lowerName.endsWith('.csv')) {
+      notifyToast('error', 'صيغة غير مدعومة', 'الاستيراد متاح لملفات Excel وCSV (.xlsx و.xls و.xlsm و.csv).');
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -85,7 +85,7 @@ export const ImportExportToolbar: React.FC<ImportExportToolbarProps> = ({
   return (
     <div className={`flex items-center gap-2 flex-wrap ${className}`} dir="rtl">
       <input type="file" ref={fileInputRef} onChange={handleFileChange}
-        accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" className="hidden" />
+        accept=".xlsx,.xls,.xlsm,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,application/octet-stream,*/*" className="hidden" />
       <button type="button" onClick={onExport} title={exportTitle}
         className="px-3.5 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-xl text-xs font-bold flex items-center gap-2 backdrop-blur-md transition-all cursor-pointer shadow-xs">
         <Download className="w-3.5 h-3.5 text-emerald-400" /><span>{exportLabel}</span>

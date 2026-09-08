@@ -50,3 +50,7 @@ The application selects its local database backend at runtime:
 - Offline: local database remains usable and password/data changes are queued for later synchronization.
 
 See `OFFLINE_ONLINE_FINAL_AUDIT_AR.md` for the final audit and verification notes.
+
+
+## Supabase Auth first setup
+The application uses Supabase Auth as the online authority. Create/confirm the Auth user `admin@ifc.academy` in Supabase Dashboard and set its password to the same initial password used locally (`1234567`) before the first online login. The client must never contain a Supabase service/secret key.
