@@ -24,6 +24,15 @@
         },
         {
           "path": "$DOCUMENT/IFC Academy Data/**/*"
+        },
+        {
+          "path": "$APPDATA/ifc_academy.db"
+        },
+        {
+          "path": "$APPDATA/**/*"
+        },
+        {
+          "path": "$RESOURCE/data/ifc_academy.db"
         }
       ]
     }
