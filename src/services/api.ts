@@ -1,6 +1,6 @@
 import { Player, PaymentRecord, ExpenseRecord, Coach, AcademySettings, MonthlyArchiveRecord, SessionRecord, AppNotification } from '../types';
 import { getDb, ensureAdmin, ensureSettings, defaultSettings, nowIso, id, json, bool, hashPassword, verifyPassword } from './localDb';
-import { changeCloudPassword } from './supabaseCloud';
+import { changeCloudPassword, cloudLogin, cloudLogout, getCloudAuthUser, updateCloudUsername, isCloudSyncConfigured, isNetworkError } from './supabaseCloud';
 
 const AUTH_TOKEN_KEY = 'ifc_admin_session_token';
 const AUTH_SESSION_KEY = 'ifc_auth_session_v2';
@@ -16,11 +16,45 @@ const mapPlayer=(p:any,sessions:SessionRecord[]):Player=>({id:p.id,memberNumber:
 const mapSettings=(s:any):AcademySettings=>({academyName:s.academy_name||defaultSettings.academyName,logoText:s.logo_text||defaultSettings.logoText,phone:s.phone||defaultSettings.phone,email:s.email||defaultSettings.email,address:s.address||defaultSettings.address,currency:s.currency||defaultSettings.currency,currentSeason:s.current_season||defaultSettings.currentSeason,whatsappNotificationsEnabled:bool(s.whatsapp_notifications_enabled,true),smsAlertsEnabled:bool(s.sms_alerts_enabled,false),customLogoUrl:s.custom_logo_url||'',colorTheme:s.color_theme||'classic-blue',primaryColor:s.primary_color||'#2563eb',backgroundColor:s.background_color||'#020617',navbarColor:s.navbar_color||'#0b1120',desktopNotificationsEnabled:bool(s.desktop_notifications_enabled,true)});
 const mapNotification=(n:any):AppNotification=>({id:n.id,type:n.type,title:n.title,message:n.message,timestamp:n.timestamp,read:Boolean(Number(n.read)),category:n.category,meta:json(n.meta,{})});
 
-export async function loginAdmin(username:string,password:string){ await ensureAdmin(); const db=await getDb(); const rows=await db.select<any[]>('SELECT * FROM admin_credentials WHERE id=1'); const c=rows[0]; if(!c || username.trim().toLowerCase()!==String(c.username).toLowerCase() || !(await verifyPassword(password,c.password_hash,c.password_salt))) throw new Error('بيانات الدخول غير صحيحة'); const user={...DEFAULT_USER,username:c.username}; const token=saveLocalSession(user); return {token,access_token:token,refresh_token:token,expires_at:Math.floor(Date.now()/1000)+60*60*24*30,user}; }
-export async function validateAdminSession(token:string){ const valid=Boolean(token && localStorage.getItem(AUTH_TOKEN_KEY)===token && getSessionUser()); return valid?{authenticated:true,user:getSessionUser(),offline:true}:{authenticated:false,networkError:false}; }
-export async function refreshAdminSession(refreshToken:string){ const u=getSessionUser(); if(!u || refreshToken!==localStorage.getItem(AUTH_TOKEN_KEY)) throw new Error('جلسة الدخول غير صالحة'); return {access_token:refreshToken,refresh_token:refreshToken,expires_at:Math.floor(Date.now()/1000)+60*60*24*30,user:u}; }
-export async function logoutAdmin(_token:string){ localStorage.removeItem(AUTH_TOKEN_KEY); localStorage.removeItem(AUTH_SESSION_KEY); }
-export async function updateAdminCredentials(username:string,newPassword:string,currentPassword=''){ requireSession(); if(!username.trim()) throw new Error('اسم المستخدم مطلوب'); if(newPassword.length<6) throw new Error('كلمة المرور يجب أن تكون 6 أحرف/أرقام على الأقل'); if(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY && !currentPassword) throw new Error('اكتب كلمة المرور الحالية حتى يمكن مزامنة تغيير الباسورد بأمان.'); if(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY) await changeCloudPassword(currentPassword,newPassword,true); const db=await getDb(); const h=await hashPassword(newPassword); await db.execute('UPDATE admin_credentials SET username=?,password_hash=?,password_salt=?,updated_at=? WHERE id=1',[username.trim(),h.hash,h.salt,nowIso()]); const user={...DEFAULT_USER,username:username.trim()}; saveLocalSession(user); return {success:true,user,username:user.username}; }
+export async function loginAdmin(username:string,password:string){
+  await ensureAdmin();
+  const db=await getDb();
+  const local=(await db.select<any[]>('SELECT * FROM admin_credentials WHERE id=1'))[0];
+  const entered=username.trim().toLowerCase();
+  if(!entered||!password)throw new Error('اكتب اسم المستخدم وكلمة المرور.');
+  const online=Boolean(navigator.onLine&&isCloudSyncConfigured());
+  if(online){
+    try{
+      const session=await cloudLogin(password);
+      const hadCloudUsername=Boolean(session?.user?.user_metadata?.username);
+      const cloudUsername=String(session?.user?.user_metadata?.username||local?.username||'admin');
+      if(entered!==cloudUsername.trim().toLowerCase()){
+        await cloudLogout();
+        throw new Error('اسم المستخدم غير صحيح.');
+      }
+      if(!hadCloudUsername){try{await updateCloudUsername(cloudUsername);}catch{}}
+      const h=await hashPassword(password);
+      await db.execute('UPDATE admin_credentials SET username=?,password_hash=?,password_salt=?,updated_at=? WHERE id=1',[cloudUsername,h.hash,h.salt,nowIso()]);
+      const user={...DEFAULT_USER,username:cloudUsername};
+      return {token:session.access_token,access_token:session.access_token,refresh_token:session.refresh_token,expires_at:session.expires_at,user};
+    }catch(error:any){
+      if(!isNetworkError(error))throw new Error(error?.message||'بيانات الدخول غير صحيحة.');
+    }
+  }
+  if(!local||entered!==String(local.username).toLowerCase()||!(await verifyPassword(password,local.password_hash,local.password_salt)))throw new Error('بيانات الدخول غير صحيحة');
+  const user={...DEFAULT_USER,username:local.username};const token=saveLocalSession(user);return {token,access_token:token,refresh_token:token,expires_at:Math.floor(Date.now()/1000)+60*60*24*30,user};
+}
+export async function validateAdminSession(token:string){
+  const cached=getSessionUser();
+  if(navigator.onLine&&isCloudSyncConfigured()){
+    try{const user=await (await import('./supabaseCloud')).getCloudAuthUser();if(!user)return{authenticated:false,networkError:false};const merged={...DEFAULT_USER,...cached,username:user.user_metadata?.username||cached?.username||'admin'};return{authenticated:true,user:merged,offline:false};}
+    catch(e){if(!isNetworkError(e))return{authenticated:false,networkError:false};}
+  }
+  const valid=Boolean(token&&localStorage.getItem(AUTH_TOKEN_KEY)===token&&cached);return valid?{authenticated:true,user:cached,offline:true}:{authenticated:false,networkError:false};
+}
+export async function refreshAdminSession(refreshToken:string){const u=getSessionUser();if(!u||refreshToken!==localStorage.getItem(AUTH_TOKEN_KEY))throw new Error('جلسة الدخول غير صالحة');return{access_token:refreshToken,refresh_token:refreshToken,expires_at:Math.floor(Date.now()/1000)+60*60*24*30,user:u};}
+export async function logoutAdmin(_token:string){try{await cloudLogout();}catch{}localStorage.removeItem(AUTH_TOKEN_KEY);localStorage.removeItem(AUTH_SESSION_KEY);localStorage.removeItem('ifc_admin_refresh_token');}
+export async function updateAdminCredentials(username:string,newPassword:string,currentPassword=''){requireSession();if(!username.trim())throw new Error('اسم المستخدم مطلوب');if(newPassword.length<6)throw new Error('كلمة المرور يجب أن تكون 6 أحرف/أرقام على الأقل');if(isCloudSyncConfigured()&&!currentPassword)throw new Error('اكتب كلمة المرور الحالية حتى يمكن مزامنة تغيير الباسورد بأمان.');if(isCloudSyncConfigured())await changeCloudPassword(currentPassword,newPassword,username.trim(),true);const db=await getDb();const h=await hashPassword(newPassword);await db.execute('UPDATE admin_credentials SET username=?,password_hash=?,password_salt=?,updated_at=? WHERE id=1',[username.trim(),h.hash,h.salt,nowIso()]);const user={...DEFAULT_USER,username:username.trim()};saveLocalSession(user);return{success:true,user,username:user.username};}
 export async function checkDatabaseStatus(){ requireSession(); await ensureSettings(); const db=await getDb(); const r=await db.select<any[]>('SELECT COUNT(*) AS c FROM players'); return {connected:true,type:'SQLite (Local)',academyName:(await fetchSettings()).academyName,playerCount:r[0]?.c||0}; }
 
 export async function fetchPlayers(){ requireSession(); const db=await getDb(); const ps=await db.select<any[]>('SELECT * FROM players ORDER BY member_number COLLATE NOCASE'); const ss=await db.select<any[]>('SELECT * FROM player_sessions ORDER BY date DESC, session_number ASC'); const map=new Map<string,SessionRecord[]>(); ss.forEach(s=>{const a=map.get(s.player_id)||[];a.push(mapSession(s));map.set(s.player_id,a)}); return ps.map(p=>mapPlayer(p,map.get(p.id)||[])); }

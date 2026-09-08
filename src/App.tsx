@@ -228,10 +228,12 @@ export default function App() {
     return () => { if (timer) window.clearTimeout(timer); events.forEach(e => window.removeEventListener(e, touch)); };
   }, [currentTab]);
 
-  // Load all data directly from local SQLite
+  // Load local data after a cloud sync when online. Local storage is the offline cache.
   const loadDatabaseData = async () => {
     try {
       setIsLoadingDb(true);
+      // Supabase is authoritative whenever online; local storage remains the offline cache.
+      if (navigator.onLine) { try { await syncCloud(); } catch (e) { console.warn('Cloud sync before read failed:', e); } }
       setDbError(null);
 
       const [statusRes, playersRes, paymentsRes, expensesRes, coachesRes, settingsRes, archivesRes] =
@@ -278,7 +280,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    // SQLite is authoritative; localStorage is only a session/settings compatibility bridge.
+    // Local database is the offline source of truth; Supabase is synchronized first whenever online.
     // A small automatic snapshot keeps a human-readable/inspectable copy in the IFC Academy Data folder.
     const snapshotTimer = window.setInterval(() => {
       if (localStorage.getItem(AUTH_TOKEN_KEY)) void syncDatabaseSnapshot();
@@ -313,6 +315,7 @@ export default function App() {
           setCurrentUser({ ...DEFAULT_ADMIN_USER, ...user });
           localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({ authenticated: true, user }));
           setCurrentTab('home');
+          await flushPendingCloudChanges();
           await loadDatabaseData();
           return;
         }
@@ -1015,7 +1018,7 @@ export default function App() {
       const updated = await updateSettingsApi(newSettings);
       setSettings(updated);
       try { localStorage.setItem('ifc_cache_v4:settings', JSON.stringify(updated)); } catch {}
-      showToast('success', 'تم حفظ الإعدادات', 'تم حفظ إعدادات الأكاديمية في قاعدة SQLite المحلية بنجاح.');
+      showToast('success', 'تم حفظ الإعدادات', 'تم حفظ إعدادات الأكاديمية محليًا، وستتم مزامنتها مع Supabase عند توفر الاتصال.');
     } catch (err) {
       console.error('Failed to save settings:', err);
       showToast('error', 'تعذر حفظ الإعدادات', err instanceof Error ? err.message : 'تعذر حفظ الإعدادات في قاعدة البيانات.');
@@ -1625,8 +1628,7 @@ export default function App() {
                   console.warn('Unable to save login session:', error);
                 }
                 setCurrentTab('home');
-                void loadDatabaseData();
-                void flushPendingCloudChanges(password);
+                void (async () => { await flushPendingCloudChanges(password); await loadDatabaseData(); })();
               }}
             />
           )}

@@ -39,3 +39,14 @@ The app creates its SQLite database automatically on first run. No Supabase, Pos
 - An automatic database snapshot is maintained in `Documents/IFC Academy Data`.
 
 See `OFFLINE_V2_CHANGELOG_AR.md` for the full change list and verification notes.
+
+## Offline / Online Architecture (V1.1)
+
+The application selects its local database backend at runtime:
+
+- Tauri Windows: SQLite via `@tauri-apps/plugin-sql`.
+- Browser/Railway: IndexedDB local database.
+- Online: Supabase Auth + `academy_cloud_state` snapshot.
+- Offline: local database remains usable and password/data changes are queued for later synchronization.
+
+See `OFFLINE_ONLINE_FINAL_AUDIT_AR.md` for the final audit and verification notes.
