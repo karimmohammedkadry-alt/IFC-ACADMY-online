@@ -158,6 +158,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     window.setTimeout(() => setToast(p => ({ ...p, open: false })), 3500);
   };
 
+  const handleLogoFile = (file?: File) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { showToast('error', 'ملف غير صالح', 'اختر صورة PNG أو JPG أو WEBP.'); return; }
+    if (file.size > 8 * 1024 * 1024) { showToast('error', 'الصورة كبيرة', 'اختر صورة أقل من 8 ميجابايت.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const src = String(reader.result || '');
+      const img = new Image();
+      img.onload = () => {
+        const max = 900;
+        const scale = Math.min(1, max / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { setFormData(prev => ({ ...prev, customLogoUrl: src })); return; }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const compressed = canvas.toDataURL('image/webp', 0.88);
+        setFormData(prev => ({ ...prev, customLogoUrl: compressed }));
+        showToast('success', 'تم اختيار اللوجو', 'اضغط حفظ الإعدادات لتثبيت الصورة في النظام.');
+      };
+      img.onerror = () => showToast('error', 'تعذر قراءة الصورة', 'جرّب صورة أخرى.');
+      img.src = src;
+    };
+    reader.readAsDataURL(file);
+  };
+
   const applyThemePreset = (theme: AcademySettings['colorTheme']) => {
     const presets: Record<string, { primary: string; background: string; navbar: string }> = {
       'classic-blue': { primary: '#2563eb', background: '#020617', navbar: '#0b1120' },
@@ -379,7 +406,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {tab === 'appearance' && <Section title="المظهر والهوية البصرية" icon={<Palette className="w-4 h-4 text-purple-400" />}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Field label="رابط اللوجو"><input value={formData.customLogoUrl || ''} onChange={e=>setFormData({...formData,customLogoUrl:e.target.value})} placeholder="https://..." /></Field>
+            <Field label="لوجو الأكاديمية">
+              <div className="flex flex-wrap items-center gap-3">
+                <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={e=>handleLogoFile(e.target.files?.[0])} />
+                <button type="button" onClick={() => fileInputRef.current?.click()} className="btn-blue"><Upload className="w-4 h-4" /> اختيار صورة</button>
+                {formData.customLogoUrl ? <button type="button" onClick={() => setFormData(prev => ({...prev, customLogoUrl: ''}))} className="btn-gray">مسح اللوجو</button> : null}
+                {formData.customLogoUrl ? <img src={formData.customLogoUrl} alt="معاينة اللوجو" className="w-14 h-14 rounded-xl object-cover border border-white/10" /> : <span className="text-xs text-slate-500">لم يتم اختيار صورة</span>}
+              </div>
+            </Field>
             <Field label="الثيم"><select value={formData.colorTheme || 'classic-blue'} onChange={e=>applyThemePreset(e.target.value as any)}><option value="classic-blue">Classic Blue</option><option value="royal-gold">Royal Gold</option><option value="emerald">Emerald</option><option value="obsidian">Obsidian</option><option value="custom">Custom</option></select></Field>
             <ColorField label="اللون الأساسي" value={formData.primaryColor || '#2563eb'} onChange={v=>setFormData({...formData,primaryColor:v})}/>
             <ColorField label="لون الخلفية" value={formData.backgroundColor || '#020617'} onChange={v=>setFormData({...formData,backgroundColor:v})}/>

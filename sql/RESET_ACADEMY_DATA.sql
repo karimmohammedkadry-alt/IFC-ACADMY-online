@@ -1,61 +1,6 @@
--- IFC Academy: reset operational/demo data only.
--- This clears players, attendance sessions, payments, expenses, coaches and monthly archives.
--- It intentionally preserves Supabase Auth users and admin_credentials.
--- It also restores academy_settings to clean defaults.
-
-begin;
-
-truncate table
-  public.player_sessions,
-  public.players,
-  public.payments,
-  public.expenses,
-  public.coaches,
-  public.monthly_archives;
-
-insert into public.academy_settings (
-  id, academy_name, logo_text, phone, email, address, currency, current_season,
-  whatsapp_notifications_enabled, sms_alerts_enabled, custom_logo_url,
-  color_theme, primary_color, background_color, navbar_color, desktop_notifications_enabled
-)
-values (
-  1,
-  'أكاديمية IFC للفنون القتالية والكيك بوكسينغ',
-  'IFC ACADEMY',
-  '',
-  '',
-  '',
-  'ج.م',
-  '',
-  true,
-  false,
-  '',
-  'classic-blue',
-  '#2563eb',
-  '#020617',
-  '#0b1120',
-  true
-)
-on conflict (id) do update set
-  academy_name = excluded.academy_name,
-  logo_text = excluded.logo_text,
-  phone = excluded.phone,
-  email = excluded.email,
-  address = excluded.address,
-  currency = excluded.currency,
-  current_season = excluded.current_season,
-  whatsapp_notifications_enabled = excluded.whatsapp_notifications_enabled,
-  sms_alerts_enabled = excluded.sms_alerts_enabled,
-  custom_logo_url = excluded.custom_logo_url,
-  color_theme = excluded.color_theme,
-  primary_color = excluded.primary_color,
-  background_color = excluded.background_color,
-  navbar_color = excluded.navbar_color,
-  desktop_notifications_enabled = excluded.desktop_notifications_enabled,
-  updated_at = now();
-
-commit;
-
+-- IFC Academy: reset operational data only.
+-- Academy identity/settings (name, logo, colors, phone, email, etc.) are preserved.
+-- This prevents a reset from silently restoring old/default academy information.
 
 -- V12: install/refresh the same atomic reset function used by the Railway API.
 create or replace function public.reset_academy_data()
@@ -76,9 +21,13 @@ begin
     'monthly_archives', (select count(*) from public.monthly_archives)
   ) into deleted;
   truncate table public.player_sessions, public.players, public.payments, public.expenses, public.coaches, public.monthly_archives;
-  insert into public.academy_settings (id, data_epoch, academy_name, logo_text, phone, email, address, currency, current_season, whatsapp_notifications_enabled, sms_alerts_enabled, custom_logo_url, color_theme, primary_color, background_color, navbar_color, desktop_notifications_enabled)
-  values (1, coalesce((select data_epoch from public.academy_settings where id=1),0)+1, 'أكاديمية IFC للفنون القتالية والكيك بوكسينغ', 'IFC ACADEMY', '', '', '', 'ج.م', '', true, false, '', 'classic-blue', '#2563eb', '#020617', '#0b1120', true)
-  on conflict (id) do update set data_epoch=excluded.data_epoch, academy_name=excluded.academy_name, logo_text=excluded.logo_text, phone=excluded.phone, email=excluded.email, address=excluded.address, currency=excluded.currency, current_season=excluded.current_season, whatsapp_notifications_enabled=excluded.whatsapp_notifications_enabled, sms_alerts_enabled=excluded.sms_alerts_enabled, custom_logo_url=excluded.custom_logo_url, color_theme=excluded.color_theme, primary_color=excluded.primary_color, background_color=excluded.background_color, navbar_color=excluded.navbar_color, desktop_notifications_enabled=excluded.desktop_notifications_enabled, updated_at=now();
+  -- Preserve all academy settings/identity exactly as configured by the administrator.
+  update public.academy_settings
+    set data_epoch = coalesce(data_epoch, 0) + 1, updated_at = now()
+  where id = 1;
+  if not found then
+    insert into public.academy_settings (id, data_epoch) values (1, 2);
+  end if;
   return jsonb_build_object('success', true, 'deleted', deleted);
 end; $$;
 

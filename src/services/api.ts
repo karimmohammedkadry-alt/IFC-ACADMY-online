@@ -75,9 +75,11 @@ async function withOfflineMutation<T>(opts: {
 }
 
 async function clearAllLocalData() {
-  await clearLocalSnapshots(LOCAL_KEYS);
+  // Global reset clears operational data only. Academy identity/settings must survive.
+  const operationalKeys = LOCAL_KEYS.filter((key) => key !== 'settings');
+  await clearLocalSnapshots(operationalKeys);
   try {
-    LOCAL_KEYS.forEach((key) => localStorage.removeItem(CACHE_PREFIX + key));
+    operationalKeys.forEach((key) => localStorage.removeItem(CACHE_PREFIX + key));
     localStorage.removeItem('ifc_server_sync_fingerprint');
   } catch {}
 }

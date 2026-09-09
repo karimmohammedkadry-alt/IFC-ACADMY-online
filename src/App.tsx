@@ -415,9 +415,13 @@ export default function App() {
       const previousDay = localStorage.getItem(key);
       let loaded = loadNotifications();
       if (previousDay !== todayKey) {
+        // Daily notification counter reset: keep the history, but start the new day
+        // with a clean unread counter. Dynamic subscription alerts generated immediately
+        // after this reset are also marked read once so they cannot recreate the badge.
         loaded = loaded.map((n) => ({ ...n, read: true }));
         saveNotifications(loaded);
         localStorage.setItem(key, todayKey);
+        localStorage.setItem('ifc_notifications_daily_reset_pending_v2', '1');
       }
       setNotifications(loaded);
       setNotificationTrash(getNotificationTrash());
@@ -559,9 +563,11 @@ export default function App() {
           nextMap.set(item.id, item);
         }
       }
+      const dailyResetPending = localStorage.getItem('ifc_notifications_daily_reset_pending_v2') === '1';
       for (const alert of generated) {
-        if (!nextMap.has(alert.id)) nextMap.set(alert.id, alert);
+        if (!nextMap.has(alert.id)) nextMap.set(alert.id, dailyResetPending ? { ...alert, read: true } : alert);
       }
+      if (dailyResetPending) localStorage.removeItem('ifc_notifications_daily_reset_pending_v2');
 
       const next = Array.from(nextMap.values())
         .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
@@ -689,6 +695,9 @@ export default function App() {
         setNotifications((prev) => addNotification(notif));
         showToast('success', 'تم تعديل بيانات اللاعب', `تم تحديث بيانات ${playerData.name} بنجاح.`);
         soundAlertManager.playSuccessTone();
+        // Final authoritative refresh: make sure players, payments, finance and archive
+        // are all aligned after adding a player through any UI path.
+        await loadDatabaseData();
         return true;
       } else {
         const isStillActive =
@@ -976,6 +985,9 @@ export default function App() {
       setNotifications((prev) => addNotification(notif));
       showToast('success', 'تمت إضافة المدرب بنجاح', `تم تسجيل ${created.name} في قاعدة البيانات.`);
       soundAlertManager.playSuccessTone();
+      // Refresh every dataset after coach creation so dashboard, finance, archive and
+      // other pages immediately reflect the same authoritative state.
+      await loadDatabaseData();
     } catch (err) {
       console.error('Failed to add coach:', err);
       showToast('error', 'تعذر إضافة المدرب', err instanceof Error ? err.message : 'حدث خطأ أثناء الحفظ.');
@@ -1226,9 +1238,8 @@ export default function App() {
         saved += result.saved || 0; updated += result.updated || 0; paymentCount += result.payments || 0;
         if (playersToImport.length > 500) await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
-      const [latestPlayers, latestPayments] = await Promise.all([fetchPlayers(), fetchPayments()]);
-      setPlayers(latestPlayers);
-      setPayments(latestPayments);
+      // Refresh the complete application state, not just the two visible Excel sheets.
+      await loadDatabaseData();
       if (saved || updated) soundAlertManager.playSuccessTone();
       showToast('success', 'تم استيراد اللاعبين بسرعة', `تم حفظ ${playersToImport.length} لاعب. جديد/محدّث: ${saved}/${updated}. تم تسجيل ${paymentCount} اشتراك مالي تلقائيًا. تم تخطي ${skipped} صف.`);
     } catch (err) {
@@ -1366,8 +1377,8 @@ export default function App() {
         saved += result.saved || 0;
         if (coachesToImport.length > 500) await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
-      const latestCoaches = await fetchCoaches();
-      setCoaches(latestCoaches);
+      // Refresh the complete application state after bulk coach import.
+      await loadDatabaseData();
       if (saved) soundAlertManager.playSuccessTone();
       showToast('success', 'تم استيراد المدربين بسرعة', `تم حفظ ${saved} مدرب. تم تخطي ${skipped} صف.`);
     } catch (err) {

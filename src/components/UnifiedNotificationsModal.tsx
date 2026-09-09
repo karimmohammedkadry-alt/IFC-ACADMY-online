@@ -405,17 +405,17 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
                   </div>
 
                   {isExpiringOrOverdue && (
-                    <div className="flex items-center gap-2 pt-1 border-t border-white/[0.06] mt-1">
+                    <div className="flex items-center gap-2 pt-1 border-t border-white/[0.06] mt-1 flex-wrap">
                       {matchedPlayer && onQuickPay && (
                         <button type="button" onClick={() => { onQuickPay(matchedPlayer); onClose(); }} className="px-2.5 py-1 bg-gradient-to-r from-yellow-500 to-amber-500 hover:brightness-110 text-slate-950 font-bold rounded-lg text-xs shadow-sm transition-all cursor-pointer flex items-center gap-1">
                           <CreditCard className="w-3 h-3" />
-                          <span>تجديد الاشتراك من المدفوعات</span>
+                          <span>تجديد الاشتراك</span>
                         </button>
                       )}
                       {matchedPlayer && matchedPlayer.parentPhone && (
                         <button type="button" onClick={() => handleSendWhatsApp(matchedPlayer)} className="px-2.5 py-1 bg-emerald-600/80 hover:bg-emerald-600 text-white font-semibold rounded-lg text-xs transition-all cursor-pointer flex items-center gap-1">
                           <Send className="w-3 h-3" />
-                          <span>إرسال لولي الأمر عبر واتساب</span>
+                          <span>إرسال واتساب</span>
                         </button>
                       )}
                     </div>
