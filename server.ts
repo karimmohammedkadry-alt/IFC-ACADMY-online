@@ -24,6 +24,7 @@ import {
   resetAcademyData,
   getAcademySyncFingerprint,
   getAcademyDataEpoch,
+  refreshCurrentMonthArchive,
   getSettings,
   updateSettings,
   getMonthlyArchives,
@@ -34,6 +35,7 @@ import {
   updateAdminProfile,
 } from './src/db/queries.ts';
 import { supabaseServer, supabaseAuth } from './src/lib/supabase-server.ts';
+import { getMicrosoftLoginUrl, verifyOAuthState, handleOAuthCallback, getExcelConnectionStatus, listWorkbooks, selectWorkbook, createWorkbook, syncExcelOnline, disconnectExcel, downloadExcelFile, uploadExcelFile } from './src/services/excelOnlineServer.ts';
 
 const DEFAULT_ADMIN_USERNAME = 'admin';
 const DEFAULT_ADMIN_PASSWORD = '5555';
@@ -112,7 +114,84 @@ export async function createApp() {
     next();
   });
   // Bulk Excel imports can legitimately exceed Express' small default JSON limit.
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '25mb' }));
+
+  // ----------------- MICROSOFT EXCEL ONLINE / ONEDRIVE -----------------
+  app.get('/api/excel/status', requireAuth, async (req: AuthRequest, res) => {
+    try { res.json(await getExcelConnectionStatus(req.user!.id)); }
+    catch (error: any) { res.status(500).json({ error: error?.message || 'تعذر قراءة حالة Excel Online.' }); }
+  });
+
+  app.get('/api/excel/connect', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const email = String(req.query.email || '').trim();
+      res.redirect(getMicrosoftLoginUrl(req.user!.id, email));
+    } catch (error: any) {
+      res.status(500).send(`<html dir="rtl"><body style="font-family:Arial;padding:40px"><h2>تعذر بدء ربط Excel Online</h2><p>${String(error?.message || '').replace(/[<>]/g,'')}</p></body></html>`);
+    }
+  });
+
+  app.get('/api/excel/callback', async (req, res) => {
+    try {
+      const userId = verifyOAuthState(String(req.query.state || ''));
+      const code = String(req.query.code || '');
+      if (!code) throw new Error('لم يتم استلام رمز Microsoft.');
+      const result = await handleOAuthCallback(userId, code);
+      const base = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+      res.redirect(`${base.replace(/\/$/, '')}/?excel=connected&email=${encodeURIComponent(result.email || '')}`);
+    } catch (error: any) {
+      const base = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+      res.redirect(`${base.replace(/\/$/, '')}/?excel=error&message=${encodeURIComponent(error?.message || 'تعذر ربط Microsoft Excel')}`);
+    }
+  });
+
+  app.get('/api/excel/workbooks', requireAuth, async (req: AuthRequest, res) => {
+    try { res.json(await listWorkbooks(req.user!.id)); }
+    catch (error: any) { res.status(500).json({ error: error?.message || 'تعذر قراءة ملفات Excel من OneDrive.' }); }
+  });
+
+  app.post('/api/excel/workbook/select', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const itemId = String(req.body?.itemId || '').trim();
+      if (!itemId) return res.status(400).json({ error: 'itemId مطلوب.' });
+      res.json(await selectWorkbook(req.user!.id, itemId));
+    } catch (error: any) { res.status(500).json({ error: error?.message || 'تعذر اختيار ملف Excel.' }); }
+  });
+
+  app.post('/api/excel/workbook/create', requireAuth, async (req: AuthRequest, res) => {
+    try { res.json(await createWorkbook(req.user!.id, String(req.body?.name || 'IFC_Academy.xlsx'))); }
+    catch (error: any) { res.status(500).json({ error: error?.message || 'تعذر إنشاء ملف Excel.' }); }
+  });
+
+  app.post('/api/excel/sync', requireAuth, async (req: AuthRequest, res) => {
+    try { res.json(await syncExcelOnline(req.user!.id, String(req.body?.direction || 'auto') as any)); }
+    catch (error: any) { res.status(500).json({ error: error?.message || 'تعذر مزامنة Excel Online.' }); }
+  });
+
+  app.get('/api/excel/download', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const file = await downloadExcelFile(req.user!.id);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=\"${encodeURIComponent(file.name)}\"`);
+      res.send(Buffer.from(file.buffer));
+    } catch (error: any) { res.status(500).json({ error: error?.message || 'تعذر تنزيل ملف Excel.' }); }
+  });
+
+  app.post('/api/excel/upload', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const raw = String(req.body?.base64 || '');
+      if (!raw) return res.status(400).json({ error: 'لم يتم إرسال ملف Excel.' });
+      const clean = raw.includes(',') ? raw.slice(raw.indexOf(',') + 1) : raw;
+      const buffer = Buffer.from(clean, 'base64');
+      if (buffer.length > 12 * 1024 * 1024) return res.status(413).json({ error: 'ملف Excel كبير جداً. الحد الحالي 12MB.' });
+      res.json(await uploadExcelFile(req.user!.id, buffer));
+    } catch (error: any) { res.status(500).json({ error: error?.message || 'تعذر رفع ملف Excel إلى OneDrive.' }); }
+  });
+
+  app.post('/api/excel/disconnect', requireAuth, async (req: AuthRequest, res) => {
+    try { await disconnectExcel(req.user!.id); res.json({ success: true }); }
+    catch (error: any) { res.status(500).json({ error: error?.message || 'تعذر فصل Excel Online.' }); }
+  });
 
   // ----------------- HEALTH & DB STATUS -----------------
   app.get('/api/health', (_req, res) => {
@@ -249,6 +328,16 @@ export async function createApp() {
     }
   });
 
+  app.post('/api/archives/current/sync', async (req: AuthRequest, res) => {
+    try {
+      const archive = await refreshCurrentMonthArchive(String(req.body?.archivedBy || 'المدير العام (Admin)'));
+      res.json(archive);
+    } catch (error: any) {
+      console.error('Failed to refresh current month archive:', error);
+      res.status(500).json({ error: error.message || 'تعذر تحديث أرشيف الشهر الحالي' });
+    }
+  });
+
   // ----------------- PLAYERS API -----------------
   app.get('/api/players', async (_req, res) => {
     try {
@@ -266,7 +355,8 @@ export async function createApp() {
       if (!players.length) return res.status(400).json({ error: 'لا توجد بيانات لاعبين للاستيراد.' });
       if (players.length > 5000) return res.status(413).json({ error: 'ملف الاستيراد كبير جدًا. الحد الأقصى 5000 لاعب في العملية الواحدة.' });
       const result = await bulkImportPlayers(players, String(req.body?.collectedBy || 'مسؤول الخزينة'), req.body?.registerSubscriptions !== false);
-      res.json({ success: true, ...result });
+      let archive = null; try { archive = await refreshCurrentMonthArchive(String(req.body?.collectedBy || 'مسؤول الخزينة')); } catch (e) { console.warn('Archive refresh after player bulk skipped:', e); }
+      res.json({ success: true, ...result, archive });
     } catch (error: any) {
       console.error('Failed bulk player import:', error);
       res.status(500).json({ error: error.message || 'تعذر استيراد اللاعبين بالجملة' });
@@ -329,7 +419,8 @@ export async function createApp() {
   app.post('/api/payments', async (req: AuthRequest, res) => {
     try {
       const newPayment = await createPayment(req.body);
-      res.status(201).json(newPayment);
+      let archive = null; try { archive = await refreshCurrentMonthArchive(String(req.body?.collectedBy || 'مسؤول الخزينة')); } catch (e) { console.warn('Archive refresh after payment skipped:', e); }
+      res.status(201).json({ ...newPayment, archive });
     } catch (error: any) {
       console.error('Failed to record payment:', error);
       res.status(500).json({ error: error.message || 'Failed to record payment' });
@@ -360,7 +451,8 @@ export async function createApp() {
   app.post('/api/expenses', async (req: AuthRequest, res) => {
     try {
       const newExpense = await createExpense(req.body);
-      res.status(201).json(newExpense);
+      let archive = null; try { archive = await refreshCurrentMonthArchive(String(req.body?.recordedBy || 'المدير العام (Admin)')); } catch (e) { console.warn('Archive refresh after expense skipped:', e); }
+      res.status(201).json({ ...newExpense, archive });
     } catch (error: any) {
       console.error('Failed to record expense:', error);
       res.status(500).json({ error: error.message || 'Failed to record expense' });
@@ -394,7 +486,8 @@ export async function createApp() {
       if (!coaches.length) return res.status(400).json({ error: 'لا توجد بيانات مدربين للاستيراد.' });
       if (coaches.length > 5000) return res.status(413).json({ error: 'ملف الاستيراد كبير جدًا. الحد الأقصى 5000 مدرب في العملية الواحدة.' });
       const result = await bulkImportCoaches(coaches);
-      res.json({ success: true, ...result });
+      let archive = null; try { archive = await refreshCurrentMonthArchive('المدير العام (Admin)'); } catch (e) { console.warn('Archive refresh after coach bulk skipped:', e); }
+      res.json({ success: true, ...result, archive });
     } catch (error: any) {
       console.error('Failed bulk coach import:', error);
       res.status(500).json({ error: error.message || 'تعذر استيراد المدربين بالجملة' });
@@ -404,7 +497,8 @@ export async function createApp() {
   app.post('/api/coaches', async (req: AuthRequest, res) => {
     try {
       const newCoach = await createCoach(req.body);
-      res.status(201).json(newCoach);
+      let archive = null; try { archive = await refreshCurrentMonthArchive('المدير العام (Admin)'); } catch (e) { console.warn('Archive refresh after coach create skipped:', e); }
+      res.status(201).json({ ...newCoach, archive });
     } catch (error: any) {
       console.error('Failed to create coach:', error);
       res.status(500).json({ error: error.message || 'Failed to create coach' });
@@ -469,6 +563,7 @@ export async function createApp() {
   // ----------------- MONTHLY ARCHIVES API -----------------
   app.get('/api/archives', async (_req, res) => {
     try {
+      try { await refreshCurrentMonthArchive('المدير العام (Admin)'); } catch (archiveRefreshError) { console.warn('Current archive refresh during read skipped:', archiveRefreshError); }
       const list = await getMonthlyArchives();
       res.json(list);
     } catch (error: any) {

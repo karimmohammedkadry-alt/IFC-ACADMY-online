@@ -64,6 +64,7 @@ export interface Player {
   subscriptionExpiry: string;
   status: SubscriptionStatus;
   joinDate: string;
+  paymentPeriodMonth?: string;
 }
 
 export interface PaymentRecord {
@@ -143,6 +144,8 @@ export interface MonthlyArchiveRecord {
   expensesCount: number;
   activePlayersCount?: number;
   overduePlayersCount?: number;
+  playersCount?: number;
+  coachesCount?: number;
   payments?: PaymentRecord[];
   expenses?: ExpenseRecord[];
   notes?: string;

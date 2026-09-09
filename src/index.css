@@ -66,3 +66,14 @@
     color: #0f172a !important;
   }
 }
+
+/* IFC dynamic branding: the Appearance settings are real CSS variables, not preview-only. */
+:root { --color-primary: #2563eb; --color-bg: #020617; --color-navbar: #0b1120; }
+.bg-blue-600 { background-color: var(--color-primary) !important; }
+.bg-blue-500 { background-color: color-mix(in srgb, var(--color-primary) 88%, white) !important; }
+.text-blue-400, .text-blue-300, .text-blue-200 { color: var(--color-primary) !important; }
+.border-blue-400, .border-blue-500, .border-blue-500\/20, .border-blue-500\/25, .border-blue-500\/30, .border-blue-500\/40 { border-color: color-mix(in srgb, var(--color-primary) 45%, transparent) !important; }
+.focus\:border-blue-400:focus { border-color: var(--color-primary) !important; }
+.shadow-blue-500\/25, .shadow-blue-500\/30 { --tw-shadow-color: color-mix(in srgb, var(--color-primary) 30%, transparent) !important; }
+.from-blue-500, .from-blue-600 { --tw-gradient-from: var(--color-primary) !important; }
+.to-indigo-600, .to-indigo-500 { --tw-gradient-to: color-mix(in srgb, var(--color-primary) 72%, #111827) !important; }

@@ -239,6 +239,17 @@ export const MonthlyArchiveModal: React.FC<MonthlyArchiveModalProps> = ({
                   </div>
                 </div>
 
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/10 flex items-center justify-between">
+                    <span className="text-xs text-slate-400">إجمالي اللاعبين</span>
+                    <strong className="text-white">{(currentArchive.playersCount ?? currentArchive.activePlayersCount ?? 0).toLocaleString()}</strong>
+                  </div>
+                  <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/10 flex items-center justify-between">
+                    <span className="text-xs text-slate-400">إجمالي المدربين</span>
+                    <strong className="text-white">{(currentArchive.coachesCount ?? 0).toLocaleString()}</strong>
+                  </div>
+                </div>
+
                 {/* Sub-tabs: Overview, Payments, Expenses */}
                 <div className="flex items-center gap-2 border-b border-white/10 pb-2">
                   <button

@@ -9,3 +9,8 @@
 - The service worker caches the application shell only. API responses are never cached by the service worker.
 - A PWA manifest allows installation from a Chromium browser as a standalone app.
 - If a sync operation hits a non-network server error, it is kept as a conflict and is not silently replaced by a stale server snapshot.
+
+
+## Excel as automatic database mirror (V12.3)
+
+Excel is a synchronized full-data mirror/export, not the authoritative multi-device database. Supabase remains authoritative online and IndexedDB/local database remains the offline operational store. Automatic Excel sync runs while the web app is open and the linked file has read/write permission.

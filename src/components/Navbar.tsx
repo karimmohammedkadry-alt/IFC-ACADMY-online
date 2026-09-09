@@ -25,6 +25,8 @@ interface NavbarProps {
   currentUser?: { name: string; avatar: string; role?: string; email?: string };
   isDbConnected?: boolean;
   customLogoUrl?: string;
+  academyName?: string;
+  logoText?: string;
   navbarColor?: string;
   primaryColor?: string;
 }
@@ -38,6 +40,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   totalNotificationsCount = 0,
   onOpenNotifications,
   customLogoUrl,
+  academyName,
+  logoText,
   navbarColor,
   primaryColor,
 }) => {
@@ -71,7 +75,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             
             <div className="flex flex-col">
               <span className="font-black text-lg tracking-wider text-white uppercase font-sans">
-                IFC <span className="text-yellow-400">ACADEMY</span>
+                {logoText || 'IFC'} <span style={{ color: primaryColor || '#eab308' }}>{academyName || 'ACADEMY'}</span>
               </span>
             </div>
           </div>
@@ -87,16 +91,16 @@ export const Navbar: React.FC<NavbarProps> = ({
                   onClick={() => onSelectTab(item.id)}
                   className={`relative flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold transition-all duration-200 cursor-pointer ${
                     isActive
-                      ? 'text-yellow-400 bg-yellow-500/10 border border-yellow-500/30 shadow-sm backdrop-blur-md'
+                      ? 'bg-white/[0.04] border shadow-sm backdrop-blur-md'
                       : 'text-slate-300 hover:text-white hover:bg-white/[0.05]'
                   }`}
                 >
-                  <span className={isActive ? 'text-yellow-400' : 'text-slate-400'}>
+                  <span style={isActive ? { color: primaryColor || '#eab308' } : undefined} className={!isActive ? 'text-slate-400' : ''}>
                     {item.icon}
                   </span>
                   <span>{item.label}</span>
                   {isActive && (
-                    <span className="absolute bottom-0 right-3 left-3 h-[2.5px] bg-yellow-400 rounded-t-full shadow-[0_-2px_8px_rgba(250,204,21,0.8)]" />
+                    <span className="absolute bottom-0 right-3 left-3 h-[2.5px] rounded-t-full" style={{ backgroundColor: primaryColor || '#eab308' }} />
                   )}
                 </button>
               );
@@ -114,7 +118,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 onClick={() => onSelectTab(item.id)}
                 className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap ${
                   isActive
-                    ? 'text-yellow-400 bg-yellow-500/10 border border-yellow-500/25'
+                    ? 'bg-white/[0.04] border'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -136,7 +140,8 @@ export const Navbar: React.FC<NavbarProps> = ({
             aria-label="مركز الإشعارات والتنبيهات"
           >
             <Bell
-              className={`w-5 h-5 text-yellow-400 transition-transform ${
+              style={{ color: primaryColor || '#eab308' }}
+              className={`w-5 h-5 transition-transform ${
                 totalNotificationsCount > 0 || expiringIn3DaysCount > 0
                   ? 'animate-bell-shake'
                   : 'group-hover:rotate-12 group-hover:scale-110'

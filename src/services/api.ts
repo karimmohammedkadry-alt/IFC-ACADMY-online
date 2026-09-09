@@ -329,6 +329,46 @@ export async function checkDatabaseStatus(): Promise<{ connected: boolean; type?
   }
 }
 
+async function refreshLocalCurrentMonthArchive(archivedBy = 'المدير العام (Admin)'): Promise<MonthlyArchiveRecord> {
+  const now = new Date();
+  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const monthLabel = now.toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' });
+  const [players, coaches, payments, expenses] = await Promise.all([
+    getLocalSnapshot<Player[]>('players'), getLocalSnapshot<Coach[]>('coaches'),
+    getLocalSnapshot<PaymentRecord[]>('payments'), getLocalSnapshot<ExpenseRecord[]>('expenses'),
+  ]);
+  const monthPayments = (payments || []).filter((p) => p.date?.startsWith(monthKey));
+  const monthExpenses = (expenses || []).filter((e) => e.date?.startsWith(monthKey));
+  const totalIncome = monthPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const totalExpenses = monthExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  const archive: MonthlyArchiveRecord = {
+    id: `arch-live-${monthKey}`, monthKey, monthLabel, archivedAt: now.toISOString(), archivedBy,
+    totalIncome, totalExpenses, netProfit: totalIncome - totalExpenses,
+    paymentsCount: monthPayments.length, expensesCount: monthExpenses.length,
+    activePlayersCount: (players || []).filter((p) => p.status === 'نشط').length,
+    overduePlayersCount: (players || []).filter((p) => p.status === 'متأخر').length,
+    playersCount: (players || []).length, coachesCount: (coaches || []).length,
+    payments: monthPayments, expenses: monthExpenses,
+    notes: 'سجل حي للشهر الحالي يتم تحديثه تلقائيًا.',
+  };
+  await setLocalSnapshot('archives', [archive, ...((await getLocalSnapshot<MonthlyArchiveRecord[]>('archives')) || []).filter((a) => a.monthKey !== monthKey)]);
+  return archive;
+}
+
+async function refreshCurrentMonthArchiveApi(archivedBy = 'المدير العام (Admin)') {
+  if (isOfflineNow()) return refreshLocalCurrentMonthArchive(archivedBy);
+  try {
+    const res = await authorizedFetch('/api/archives/current/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archivedBy }) });
+    if (!res.ok) throw await readApiError(res, 'تعذر تحديث أرشيف الشهر الحالي');
+    const archive = await res.json() as MonthlyArchiveRecord;
+    await mutateLocal<MonthlyArchiveRecord[]>('archives', (current) => [archive, ...(current || []).filter((a) => a.monthKey !== archive.monthKey)]);
+    return archive;
+  } catch (error) {
+    if (isNetworkFailure(error)) return refreshLocalCurrentMonthArchive(archivedBy);
+    throw error;
+  }
+}
+
 // ----------------- PLAYERS -----------------
 export async function fetchPlayers(): Promise<Player[]> { return fetchCachedJson<Player[]>('/api/players', 'players'); }
 
@@ -339,10 +379,13 @@ export async function bulkImportPlayersApi(players: Player[], collectedBy = 'م�
     let saved = 0, payments = 0;
     const queued: Array<{ method: string; url: string; body: any }> = [];
     for (const raw of players) {
-      const prepared: Player = { ...raw, id: raw.id || localId('player'), memberNumber: raw.memberNumber ? String(raw.memberNumber) : await nextLocalMemberNumberFrom(current) };
-      current = [prepared, ...current.filter((p) => p.id !== prepared.id && String(p.memberNumber) !== String(prepared.memberNumber))];
-      queued.push({ method: 'POST', url: '/api/players', body: prepared }); saved++;
-      if (prepared.monthlyFee > 0) {
+      const memberNumber = raw.memberNumber ? String(raw.memberNumber) : await nextLocalMemberNumberFrom(current);
+      const existingLocal = current.find((p) => String(p.memberNumber) === memberNumber);
+      const prepared: Player = { ...raw, id: raw.id || existingLocal?.id || localId('player'), memberNumber };
+      current = [prepared, ...current.filter((p) => p.id !== prepared.id && String(p.memberNumber) !== memberNumber)];
+      queued.push({ method: 'POST', url: '/api/players', body: prepared });
+      if (!existingLocal) saved++;
+      if (!existingLocal && prepared.monthlyFee > 0) {
         const payment: PaymentRecord = {
           id: `pay-auto-import-${prepared.id}-${prepared.subscriptionStartDate || new Date().toISOString().slice(0,10)}`.replace(/[^A-Za-z0-9_-]/g, '-'),
           invoiceNumber: `IMP-${prepared.id}-${String(prepared.subscriptionStartDate || new Date().toISOString().slice(0,10)).replace(/-/g,'')}`,
@@ -356,6 +399,7 @@ export async function bulkImportPlayersApi(players: Player[], collectedBy = 'م�
       }
     }
     await setLocalSnapshot('players', current); await setLocalSnapshot('payments', currentPayments);
+    await refreshLocalCurrentMonthArchive(collectedBy);
     for (const op of queued) await enqueueMutation({ ...op, epoch: Number(localStorage.getItem('ifc_server_data_epoch') || 1) });
     dispatchSyncEvent('ifc-sync-queued');
     return { saved, updated: 0, payments };
@@ -384,7 +428,9 @@ export async function createPlayerApi(player: Player): Promise<Player> {
       const res = await authorizedFetch('/api/players', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prepared) });
       await assertApiOk(res, 'تعذر إضافة اللاعب'); return res.json();
     }, localResult: prepared, localApply,
-  });  if (result && result.id) await mutateLocal<Player[]>('players', (current) => [result, ...(current || []).filter((p) => p.id !== result.id && p.id !== prepared.id)]);
+  });
+  try { await refreshCurrentMonthArchiveApi(); } catch (e) { console.warn('Archive refresh after player save skipped:', e); }
+  if (result && result.id) await mutateLocal<Player[]>('players', (current) => [result, ...(current || []).filter((p) => p.id !== result.id && p.id !== prepared.id)]);
   return result;
 }
 
@@ -432,12 +478,14 @@ export async function createPaymentApi(payment: PaymentRecord): Promise<PaymentR
   const result = await withOfflineMutation({ method: 'POST', url: '/api/payments', body: prepared, online: async () => {
     const res = await authorizedFetch('/api/payments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prepared) }); await assertApiOk(res, 'تعذر تسجيل الدفعة'); return res.json();
   }, localResult: prepared, localApply });
+  try { await refreshCurrentMonthArchiveApi(prepared.collectedBy || 'مسؤول الخزينة'); } catch (e) { console.warn('Archive refresh after payment skipped:', e); }
   if (result && result.id) await mutateLocal<PaymentRecord[]>('payments', (current) => [result, ...(current || []).filter((item) => item.id !== result.id && item.id !== prepared.id)]);
   return result;
 }
 export async function deletePaymentApi(id: string): Promise<void> {
   const localApply = async () => { await mutateLocal<PaymentRecord[]>('payments', (current) => (current || []).filter((p) => p.id !== id)); };
   await withOfflineMutation({ method: 'DELETE', url: `/api/payments/${id}`, online: async () => { const res = await authorizedFetch(`/api/payments/${id}`, { method: 'DELETE' }); await assertApiOk(res, 'تعذر حذف الدفعة'); }, localResult: undefined, localApply });
+  try { await refreshCurrentMonthArchiveApi(); } catch (e) { console.warn('Archive refresh after payment delete skipped:', e); }
 }
 
 // ----------------- EXPENSES -----------------
@@ -447,12 +495,14 @@ export async function createExpenseApi(expense: ExpenseRecord): Promise<ExpenseR
   const prepared = { ...expense, id: expense.id || localId('expense') };
   const localApply = async () => { await mutateLocal<ExpenseRecord[]>('expenses', (current) => [prepared, ...(current || []).filter((e) => e.id !== prepared.id)]); };
   const result = await withOfflineMutation({ method: 'POST', url: '/api/expenses', body: prepared, online: async () => { const res = await authorizedFetch('/api/expenses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prepared) }); await assertApiOk(res, 'تعذر تسجيل المصروف'); return res.json(); }, localResult: prepared, localApply });
+  try { await refreshCurrentMonthArchiveApi((prepared as any).recordedBy || 'المدير العام (Admin)'); } catch (e) { console.warn('Archive refresh after expense skipped:', e); }
   if (result && result.id) await mutateLocal<ExpenseRecord[]>('expenses', (current) => [result, ...(current || []).filter((item) => item.id !== result.id && item.id !== prepared.id)]);
   return result;
 }
 export async function deleteExpenseApi(id: string): Promise<void> {
   const localApply = async () => { await mutateLocal<ExpenseRecord[]>('expenses', (current) => (current || []).filter((e) => e.id !== id)); };
   await withOfflineMutation({ method: 'DELETE', url: `/api/expenses/${id}`, online: async () => { const res = await authorizedFetch(`/api/expenses/${id}`, { method: 'DELETE' }); await assertApiOk(res, 'تعذر حذف المصروف'); }, localResult: undefined, localApply });
+  try { await refreshCurrentMonthArchiveApi(); } catch (e) { console.warn('Archive refresh after expense delete skipped:', e); }
 }
 
 // ----------------- COACHES -----------------
@@ -460,12 +510,13 @@ export async function fetchCoaches(): Promise<Coach[]> { return fetchCachedJson<
 
 export async function bulkImportCoachesApi(coaches: Coach[]): Promise<{ saved: number }> {
   if (isOfflineNow()) { for (const coach of coaches) await createCoachApi(coach); return { saved: coaches.length }; }
-  const res = await authorizedFetch('/api/coaches/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ coaches }) }); await assertApiOk(res, 'تعذر استيراد المدربين بالجملة'); return res.json();
+  const res = await authorizedFetch('/api/coaches/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ coaches }) }); await assertApiOk(res, 'تعذر استيراد المدربين بالجملة'); const data = await res.json(); if (data?.archive) await mutateLocal<MonthlyArchiveRecord[]>('archives', (current) => [data.archive, ...(current || []).filter((a) => a.monthKey !== data.archive.monthKey)]); return data;
 }
 export async function createCoachApi(coach: Coach): Promise<Coach> {
   const prepared = { ...coach, id: coach.id || localId('coach') };
   const localApply = async () => { await mutateLocal<Coach[]>('coaches', (current) => [prepared, ...(current || []).filter((c) => c.id !== prepared.id)]); };
   const result = await withOfflineMutation({ method: 'POST', url: '/api/coaches', body: prepared, online: async () => { const res = await authorizedFetch('/api/coaches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prepared) }); await assertApiOk(res, 'تعذر إضافة المدرب'); return res.json(); }, localResult: prepared, localApply });
+  try { await refreshCurrentMonthArchiveApi(); } catch (e) { console.warn('Archive refresh after coach save skipped:', e); }
   if (result && result.id) await mutateLocal<Coach[]>('coaches', (current) => [result, ...(current || []).filter((item) => item.id !== result.id && item.id !== prepared.id)]);
   return result;
 }
@@ -529,3 +580,51 @@ export async function deleteMonthlyArchiveApi(id: string): Promise<void> {
   await withOfflineMutation({ method: 'DELETE', url: `/api/archives/${id}`, online: async () => { const res = await authorizedFetch(`/api/archives/${id}`, { method: 'DELETE' }); if (!res.ok) throw await readApiError(res, 'تعذر حذف أرشيف الشهر'); }, localResult: undefined, localApply });
 }
 
+
+// ----------------- MICROSOFT EXCEL ONLINE / ONEDRIVE -----------------
+export async function getExcelOnlineStatus(): Promise<any> {
+  const res = await authorizedFetch('/api/excel/status');
+  if (!res.ok) throw await readApiError(res, 'تعذر قراءة حالة Excel Online');
+  return res.json();
+}
+export function startExcelOnlineConnect(email?: string) {
+  const qs = email?.trim() ? `?email=${encodeURIComponent(email.trim())}` : '';
+  window.location.assign(`/api/excel/connect${qs}`);
+}
+export async function listExcelOnlineWorkbooks(): Promise<any[]> {
+  const res = await authorizedFetch('/api/excel/workbooks');
+  if (!res.ok) throw await readApiError(res, 'تعذر قراءة ملفات Excel من OneDrive');
+  return res.json();
+}
+export async function selectExcelOnlineWorkbook(itemId: string): Promise<any> {
+  const res = await authorizedFetch('/api/excel/workbook/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ itemId }) });
+  if (!res.ok) throw await readApiError(res, 'تعذر اختيار ملف Excel');
+  return res.json();
+}
+export async function createExcelOnlineWorkbook(name = 'IFC_Academy.xlsx'): Promise<any> {
+  const res = await authorizedFetch('/api/excel/workbook/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+  if (!res.ok) throw await readApiError(res, 'تعذر إنشاء ملف Excel');
+  return res.json();
+}
+export async function syncExcelOnlineApi(direction: 'auto' | 'system_to_excel' | 'excel_to_system' = 'auto'): Promise<any> {
+  const res = await authorizedFetch('/api/excel/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ direction }) });
+  if (!res.ok) throw await readApiError(res, 'تعذر مزامنة Excel Online');
+  return res.json();
+}
+export async function downloadExcelOnlineApi(): Promise<{ blob: Blob; name: string }> {
+  const res = await authorizedFetch('/api/excel/download');
+  if (!res.ok) throw await readApiError(res, 'تعذر تنزيل ملف Excel');
+  const disposition = res.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+  return { blob: await res.blob(), name: match?.[1] ? decodeURIComponent(match[1]) : 'IFC_Academy.xlsx' };
+}
+export async function uploadExcelOnlineApi(file: File): Promise<any> {
+  const base64 = await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onerror = () => reject(r.error); r.onload = () => resolve(String(r.result || '')); r.readAsDataURL(file); });
+  const res = await authorizedFetch('/api/excel/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base64 }) });
+  if (!res.ok) throw await readApiError(res, 'تعذر رفع ملف Excel');
+  return res.json();
+}
+export async function disconnectExcelOnlineApi(): Promise<void> {
+  const res = await authorizedFetch('/api/excel/disconnect', { method: 'POST' });
+  if (!res.ok) throw await readApiError(res, 'تعذر فصل Excel Online');
+}

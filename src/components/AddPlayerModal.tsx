@@ -35,6 +35,8 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
   const [parentPhone, setParentPhone] = useState('');
   const [monthlyFee, setMonthlyFee] = useState<string>('');
   const [subscriptionDurationMonths, setSubscriptionDurationMonths] = useState<number>(1);
+  const [paymentPeriodMonth, setPaymentPeriodMonth] = useState<string>(todayStr.slice(0, 7));
+  const [totalSessions, setTotalSessions] = useState<number>(() => { try { return Math.max(1, Number(JSON.parse(localStorage.getItem('ifc_academy_prefs') || '{}').monthlySessions || 8)); } catch { return 8; } });
   const [subscriptionStartDate, setSubscriptionStartDate] = useState(todayStr);
   const [subscriptionEndDate, setSubscriptionEndDate] = useState(calculateEndDateByMonths(todayStr, 1));
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -53,6 +55,8 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
       const eDate = playerToEdit.subscriptionEndDate || playerToEdit.subscriptionExpiry || calculateEndDateByMonths(sDate, 1);
       setSubscriptionStartDate(sDate);
       setSubscriptionEndDate(eDate);
+      setPaymentPeriodMonth(sDate.slice(0, 7));
+      setTotalSessions(Math.max(1, Number(playerToEdit.totalSessions || 8)));
       setPaymentMethod(playerToEdit.paymentMethod || 'كاش');
     } else {
       // Leave the member number blank by default; the server/database generates the next unique number.
@@ -67,6 +71,8 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
       setSubscriptionDurationMonths(1);
       setSubscriptionStartDate(todayStr);
       setSubscriptionEndDate(calculateEndDateByMonths(todayStr, 1));
+      setPaymentPeriodMonth(todayStr.slice(0, 7));
+      setTotalSessions((() => { try { return Math.max(1, Number(JSON.parse(localStorage.getItem('ifc_academy_prefs') || '{}').monthlySessions || 8)); } catch { return 8; } })());
       setPaymentMethod('كاش');
     }
     setValidationError(null);
@@ -160,12 +166,13 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
       subscriptionPlan: `اشتراك شهري (${team})`,
       status: computedStatus,
       avatarUrl: playerToEdit?.avatarUrl || '',
-      totalSessions: playerToEdit?.totalSessions || (() => { try { return Math.max(1, Number(JSON.parse(localStorage.getItem('ifc_academy_prefs') || '{}').monthlySessions || 8)); } catch { return 8; } })(),
       attendedSessions: playerToEdit?.attendedSessions || 0,
       absentSessions: playerToEdit?.absentSessions || 0,
       attendanceRate: playerToEdit?.attendanceRate || 0,
       joinDate: playerToEdit?.joinDate || startDate,
       sessions: playerToEdit?.sessions || [],
+      totalSessions: Math.max(1, Number(totalSessions || 1)),
+      paymentPeriodMonth,
     });
     if (saved !== false) onClose();
   };
@@ -421,6 +428,16 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
                   className="w-full bg-white/[0.04] border border-emerald-500/30 rounded-xl px-3.5 py-2.5 text-sm text-emerald-300 focus:outline-hidden focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20 backdrop-blur-md transition-all font-mono font-bold"
                 />
               </div>
+            </div>
+
+            {/* Billing month + monthly sessions */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5 text-sky-400"/><span>شهر الاشتراك / السداد *</span></label>
+              <input type="month" required value={paymentPeriodMonth} onChange={e=>setPaymentPeriodMonth(e.target.value)} className="w-full bg-white/[0.04] border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-hidden focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 font-mono" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-400"/><span>عدد الحصص للشهر *</span></label>
+              <input type="number" min={1} max={100} required value={totalSessions} onChange={e=>setTotalSessions(Math.max(1,Math.min(100,Number(e.target.value)||1)))} className="w-full bg-white/[0.04] border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-hidden focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20" />
             </div>
 
             {/* Monthly Fee - Starts empty (no 0!) */}

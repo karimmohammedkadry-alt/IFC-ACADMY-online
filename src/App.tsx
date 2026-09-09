@@ -91,6 +91,8 @@ import { SettingsView } from './views/SettingsView';
 import { RefreshCw, Database, AlertTriangle } from 'lucide-react';
 import { SystemToast, SystemToastType } from './components/SystemToast';
 import * as XLSX from 'xlsx';
+import { buildFullExcelWorkbook, connectExcelFile, ensureExcelPermission, restoreExcelHandle, readExcelWorkbook, writeExcelWorkbook, getExcelSyncMeta, markExcelConnected, markExcelDisconnected, markExcelFileHash, markExcelImported, markExcelError } from './utils/excelSync';
+import { getExcelOnlineStatus, syncExcelOnlineApi } from './services/api';
 
 const AUTH_SESSION_KEY = 'ifc_auth_session_v2';
 const AUTH_TOKEN_KEY = 'ifc_admin_session_token';
@@ -486,6 +488,8 @@ export default function App() {
   // Monthly Archive Modal State & Persistence
   const [isMonthlyArchiveModalOpen, setIsMonthlyArchiveModalOpen] = useState(false);
   const [monthlyArchives, setMonthlyArchives] = useState<MonthlyArchiveRecord[]>([]);
+  const [excelDataRevision, setExcelDataRevision] = useState(0);
+  useEffect(() => { setExcelDataRevision((v) => v + 1); }, [players, payments, expenses, coaches, settings, monthlyArchives]);
 
   // Apply dynamic theme colors to root CSS variables and document body
   useEffect(() => {
@@ -500,6 +504,10 @@ export default function App() {
 
     document.body.style.backgroundColor = bg;
   }, [settings.primaryColor, settings.backgroundColor, settings.navbarColor]);
+
+  useEffect(() => {
+    document.title = settings.academyName ? `${settings.academyName} | IFC Academy` : 'IFC Academy';
+  }, [settings.academyName]);
 
   // Unified notification sources: behavior is controlled by Settings > Subscriptions.
   const academyPrefs = (() => {
@@ -643,7 +651,7 @@ export default function App() {
   };
 
   // Add or Edit player in Supabase + auto-add to financial records
-  const handleSavePlayer = async (playerData: Partial<Player>): Promise<boolean> => {
+  const handleSavePlayer = async (playerData: Partial<Player> & { paymentPeriodMonth?: string }): Promise<boolean> => {
     try {
       if (playerData.id) {
         await updatePlayerApi(playerData.id, playerData);
@@ -703,6 +711,7 @@ export default function App() {
           parentPhone: playerData.parentPhone || '',
           joinDate: playerData.subscriptionStartDate || new Date().toISOString().split('T')[0],
           sessions: [],
+          paymentPeriodMonth: playerData.paymentPeriodMonth || new Date().toISOString().slice(0, 7),
         };
 
         const created = await createPlayerApi(newPlayer);
@@ -721,7 +730,7 @@ export default function App() {
             method: (playerData.paymentMethod as PaymentMethod) || 'كاش',
             date: new Date().toISOString().split('T')[0],
             createdAt: new Date().toISOString(),
-            periodMonth: new Date().toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' }),
+            periodMonth: playerData.paymentPeriodMonth ? new Date(`${playerData.paymentPeriodMonth}-01`).toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' }) : new Date().toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' }),
             collectedBy: currentUser.name,
             status: 'مدفوع',
             notes: 'سداد اشتراك انضمام جديد تلقائي',
@@ -1403,25 +1412,23 @@ export default function App() {
     }
   }, [players.length]);
 
-  // Export all academy data as a real Excel workbook (Arabic headers; import accepts Arabic + English).
-  const handleExportAllData = () => {
-    const workbook = XLSX.utils.book_new();
+  const buildAcademyExcelWorkbook = () => {
     const playersRows = players.map((p) => ({
-      'المعرف الداخلي': p.id, 'اسم اللاعب بالكامل': p.name, 'رقم العضوية': p.memberNumber, 'الرقم القومي': p.nationalId,
+      'المعرف الداخلي': p.id, 'اسم اللاعب بالكامل': p.name, 'رقم العضوية': p.memberNumber, 'الرقم القومي': p.nationalId || '',
       'المجموعة / الفئة': p.team, 'رقم هاتف اللاعب': p.phone, 'رقم ولي الأمر (واتساب)': p.parentPhone,
-      'طريقة الدفع': p.paymentMethod, 'مدة الاشتراك': p.subscriptionPlan, 'تاريخ بداية الاشتراك': p.subscriptionStartDate,
+      'طريقة الدفع': p.paymentMethod || '', 'مدة الاشتراك': p.subscriptionPlan, 'تاريخ بداية الاشتراك': p.subscriptionStartDate,
       'تاريخ نهاية الاشتراك': p.subscriptionEndDate, 'قيمة الاشتراك الشهري (ج.م)': p.monthlyFee, 'الحالة': p.status,
       'تاريخ الانضمام': p.joinDate, 'الرياضة': p.sport, 'إجمالي الحصص': p.totalSessions, 'الحصص الحاضرة': p.attendedSessions,
-      'الحصص الغائبة': p.absentSessions, 'ملاحظات': p.notes,
+      'الحصص الغائبة': p.absentSessions, 'ملاحظات': p.notes || '',
     }));
     const paymentRows = payments.map((p) => ({
-      'المعرف الداخلي': p.id, 'رقم الإيصال': p.invoiceNumber, 'اسم اللاعب': p.playerName, 'رقم العضوية': p.memberNumber || '', 'نوع الدفع': p.type,
+      'المعرف الداخلي': p.id, 'رقم الإيصال': p.invoiceNumber, 'اسم اللاعب': p.playerName, 'رقم العضوية': p.memberNumber || '', 'نوع الدفع': p.type || '',
       'المبلغ': p.amount, 'طريقة الدفع': p.method, 'التاريخ': p.date, 'الشهر': p.periodMonth, 'الحالة': p.status,
-      'الفئة': p.team || '', 'المحصل': p.collectedBy || '', 'ملاحظات': p.notes || '',
+      'الفئة': p.team || '', 'المحصل': p.collectedBy || '', 'ملاحظات': p.notes || '', 'معرف اللاعب': p.playerId || '', 'معرف المدرب': p.coachId || '', 'تاريخ ووقت السداد': p.createdAt || '',
     }));
     const expenseRows = expenses.map((e) => ({
       'المعرف الداخلي': e.id, 'اسم المصروف': e.title, 'الفئة': e.category, 'المبلغ': e.amount, 'التاريخ': e.date, 'المدفوع له': e.paidTo,
-      'طريقة الدفع': e.method, 'ملاحظات': e.notes || '',
+      'معرف المدرب': e.coachId || '', 'طريقة الدفع': e.method, 'ملاحظات': e.notes || '',
     }));
     const coachRows = coaches.map((c) => ({
       'المعرف الداخلي': c.id, 'اسم المدرب': c.name, 'الدور': c.role, 'الرياضة': c.sport, 'الهاتف': c.phone, 'الراتب الشهري': c.monthlySalary,
@@ -1439,19 +1446,17 @@ export default function App() {
       'تنبيهات SMS': settings.smsAlertsEnabled ? 'نعم' : 'لا', 'لون النظام': settings.primaryColor || '',
       'لون الخلفية': settings.backgroundColor || '', 'لون شريط التنقل': settings.navbarColor || '',
     }];
-    const add = (rows: any[], name: string) => {
-      const worksheet = XLSX.utils.json_to_sheet(rows);
-      const headers = rows.length ? Object.keys(rows[0]) : [];
-      worksheet['!cols'] = headers.map((header) => {
-        const maxLen = Math.max(header.length, ...rows.map((row) => String(row[header] ?? '').length));
-        const isDate = /تاريخ|date|بداية|نهاية|انضمام/i.test(header);
-        const isNumberId = /رقم|هاتف|member|national|invoice|id|كود|معرف/i.test(header);
-        return { wch: Math.min(42, Math.max(isDate ? 16 : isNumberId ? 18 : 14, maxLen + 2)) };
-      });
-      worksheet['!views'] = [{ rightToLeft: true }];
-      XLSX.utils.book_append_sheet(workbook, worksheet, name);
-    };
-    add(playersRows, 'اللاعبين'); add(paymentRows, 'المدفوعات'); add(expenseRows, 'المصروفات'); add(coachRows, 'المدربين'); add(attendanceRows, 'الحضور'); add(settingsRows, 'الإعدادات');
+    const archiveRows = monthlyArchives.map((a) => ({
+      'المعرف الداخلي': a.id, 'مفتاح الشهر': a.monthKey, 'اسم الشهر': a.monthLabel, 'تاريخ الأرشفة': a.archivedAt,
+      'تم بواسطة': a.archivedBy, 'إجمالي الدخل': a.totalIncome, 'إجمالي المصروفات': a.totalExpenses, 'صافي الربح': a.netProfit,
+      'عدد المدفوعات': a.paymentsCount, 'عدد المصروفات': a.expensesCount, 'اللاعبون النشطون': a.activePlayersCount || 0,
+      'اللاعبون المتأخرون': a.overduePlayersCount || 0, 'عدد اللاعبين': a.playersCount || 0, 'عدد المدربين': a.coachesCount || 0, 'ملاحظات': a.notes || '',
+    }));
+    return buildFullExcelWorkbook({ players: playersRows, payments: paymentRows, expenses: expenseRows, coaches: coachRows, attendance: attendanceRows, settings: settingsRows, archives: archiveRows });
+  };
+
+  const handleExportAllData = () => {
+    const workbook = buildExcelWorkbookRef.current();
     const filename = `نسخة_أكاديمية_IFC_${new Date().toISOString().split('T')[0]}.xlsx`;
     XLSX.writeFile(workbook, filename);
     showToast('success', 'تم تصدير النسخة الاحتياطية', 'تم إنشاء ملف Excel يحتوي على بيانات الأكاديمية في أوراق منفصلة.');
@@ -1499,6 +1504,109 @@ export default function App() {
       throw err;
     }
   };
+
+
+  // Real Excel Online / OneDrive sync controller. Supabase remains authoritative.
+  const excelCloudBusyRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    const runCloudSync = async () => {
+      if (cancelled || excelCloudBusyRef.current || !localStorage.getItem(AUTH_TOKEN_KEY)) return;
+      excelCloudBusyRef.current = true;
+      try {
+        const status = await getExcelOnlineStatus();
+        if (!status?.connected || !status?.workbook) return;
+        const result = await syncExcelOnlineApi('auto');
+        if (result?.direction === 'excel_to_system' && result?.sheets) {
+          await handleImportAllData(result.sheets);
+          showToast('success', 'تم تحديث النظام من Excel Online', 'تم استيراد التغييرات السحابية إلى Supabase.');
+        } else if (result?.direction === 'conflict') {
+          showToast('error', 'مزامنة Excel متوقفة للحماية', result.message);
+        }
+      } catch (e) {
+        console.warn('Excel Online sync skipped:', e);
+      } finally { excelCloudBusyRef.current = false; }
+    };
+    void runCloudSync();
+    const timer = window.setInterval(() => void runCloudSync(), 30_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [excelDataRevision]);
+
+  // Global Excel auto-sync controller. It remains active on every screen, not only Settings.
+  const excelHandleRef = useRef<FileSystemFileHandle | null>(null);
+  const excelSyncBusyRef = useRef(false);
+  const excelRevisionRef = useRef(excelDataRevision);
+  const excelLastRevisionRef = useRef(-1);
+  const excelLastHashRef = useRef('');
+  const excelPendingHashRef = useRef('');
+  const excelPendingStableRef = useRef(0);
+  const buildExcelWorkbookRef = useRef(buildAcademyExcelWorkbook);
+  const importExcelDataRef = useRef(handleImportAllData);
+  useEffect(() => {
+    excelRevisionRef.current = excelDataRevision;
+    buildExcelWorkbookRef.current = buildAcademyExcelWorkbook;
+    importExcelDataRef.current = handleImportAllData;
+  }, [excelDataRevision, players, payments, expenses, coaches, settings, monthlyArchives]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const restore = async () => {
+      try {
+        const handle = await restoreExcelHandle();
+        if (!cancelled) excelHandleRef.current = handle;
+      } catch (e) { console.warn('Excel auto-sync restore skipped:', e); }
+    };
+    void restore();
+    const onConnected = () => { void restore(); };
+    window.addEventListener('ifc-excel-connected', onConnected);
+    return () => { cancelled = true; window.removeEventListener('ifc-excel-connected', onConnected); };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(async () => {
+      if (excelSyncBusyRef.current || !excelHandleRef.current || !localStorage.getItem(AUTH_TOKEN_KEY)) return;
+      const handle = excelHandleRef.current;
+      excelSyncBusyRef.current = true;
+      try {
+        const permission = await (handle as any).queryPermission?.({ mode: 'readwrite' });
+        if (permission !== 'granted') return;
+        const fileState = await readExcelWorkbook(handle);
+        if (excelPendingHashRef.current === fileState.hash) excelPendingStableRef.current += 1;
+        else { excelPendingHashRef.current = fileState.hash; excelPendingStableRef.current = 1; }
+        if (excelPendingStableRef.current < 2) return;
+
+        const knownHash = getExcelSyncMeta().lastFileHash || excelLastHashRef.current;
+        const externalChanged = fileState.hash !== knownHash;
+        const systemChanged = excelRevisionRef.current !== excelLastRevisionRef.current;
+
+        // Never guess when both sides changed: this is the main anti-confusion rule.
+        if (externalChanged && systemChanged) {
+          markExcelError('تعارض: تم تعديل النظام وملف Excel معًا. المزامنة توقفت للحماية. افصل/أعد الربط بعد مراجعة الملف.');
+          return;
+        }
+        if (externalChanged) {
+          await importExcelDataRef.current({ __format: 'ifc-excel-auto-sync-v1', ...fileState.sheets });
+          markExcelImported();
+          markExcelFileHash(fileState.hash);
+          excelLastHashRef.current = fileState.hash;
+          excelLastRevisionRef.current = excelRevisionRef.current;
+          markExcelError('');
+          return;
+        }
+        if (systemChanged) {
+          const workbook = buildExcelWorkbookRef.current();
+          const hash = await writeExcelWorkbook(handle, workbook);
+          markExcelFileHash(hash);
+          excelLastHashRef.current = hash;
+          excelLastRevisionRef.current = excelRevisionRef.current;
+          markExcelError('');
+        }
+      } catch (e) {
+        markExcelError(e instanceof Error ? e.message : 'تعذر مزامنة Excel.');
+      } finally { excelSyncBusyRef.current = false; }
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Logout handler
   const handleLogout = async () => {
@@ -1550,6 +1658,8 @@ export default function App() {
             currentUser={currentUser}
             isDbConnected={isDbConnected}
             customLogoUrl={settings.customLogoUrl}
+            academyName={settings.academyName}
+            logoText={settings.logoText}
             navbarColor={settings.navbarColor}
             primaryColor={settings.primaryColor}
           />
@@ -1764,6 +1874,9 @@ export default function App() {
               isDbConnected={isDbConnected}
               currentUsername={currentUser.username}
               onCredentialsChanged={(username) => setCurrentUser(prev => ({ ...prev, username }))}
+              excelDataRevision={excelDataRevision}
+              buildExcelWorkbook={buildAcademyExcelWorkbook}
+              onAutoImportExcel={handleImportAllData}
             />
           )}
         </main>

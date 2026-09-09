@@ -141,6 +141,8 @@ create table if not exists public.monthly_archives (
   expenses_count integer not null default 0,
   active_players_count integer not null default 0,
   overdue_players_count integer not null default 0,
+  players_count integer not null default 0,
+  coaches_count integer not null default 0,
   payments jsonb not null default '[]'::jsonb,
   expenses jsonb not null default '[]'::jsonb,
   notes text default '',
@@ -156,6 +158,8 @@ update public.players set total_sessions = 8 where total_sessions = 12;
 
 alter table public.monthly_archives add column if not exists active_players_count integer not null default 0;
 alter table public.monthly_archives add column if not exists overdue_players_count integer not null default 0;
+alter table public.monthly_archives add column if not exists players_count integer not null default 0;
+alter table public.monthly_archives add column if not exists coaches_count integer not null default 0;
 alter table public.monthly_archives add column if not exists payments jsonb not null default '[]'::jsonb;
 alter table public.monthly_archives add column if not exists expenses jsonb not null default '[]'::jsonb;
 alter table public.monthly_archives add column if not exists notes text default '';
@@ -319,3 +323,56 @@ set search_path = public
 as $$ select coalesce((select data_epoch from public.academy_settings where id = 1), 1); $$;
 revoke all on function public.academy_data_epoch() from public;
 grant execute on function public.academy_data_epoch() to service_role;
+
+
+-- V12.1: live current-month archive refresh + PostgREST schema reload.
+create or replace function public.refresh_current_month_archive(p_archived_by text default 'المدير العام (Admin)')
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_month text := to_char(current_date, 'YYYY-MM');
+  v_id text := 'arch-live-' || v_month;
+  v_income integer := coalesce((select sum(amount) from public.payments where date like v_month || '%'),0);
+  v_expenses integer := coalesce((select sum(amount) from public.expenses where date like v_month || '%'),0);
+  v_payments integer := (select count(*) from public.payments where date like v_month || '%');
+  v_expense_count integer := (select count(*) from public.expenses where date like v_month || '%');
+  v_active integer := (select count(*) from public.players where status='نشط');
+  v_overdue integer := (select count(*) from public.players where status='متأخر');
+  v_players integer := (select count(*) from public.players);
+  v_coaches integer := (select count(*) from public.coaches);
+  v_label text := to_char(current_date, 'TMMonth YYYY');
+begin
+  insert into public.monthly_archives (
+    id, month_key, month_label, archived_at, archived_by,
+    total_income, total_expenses, net_profit, payments_count, expenses_count,
+    active_players_count, overdue_players_count, players_count, coaches_count,
+    payments, expenses, notes, updated_at
+  )
+  values (
+    v_id, v_month, v_label, now(), coalesce(nullif(p_archived_by,''),'المدير العام (Admin)'),
+    v_income, v_expenses, v_income-v_expenses, v_payments, v_expense_count,
+    v_active, v_overdue, v_players, v_coaches,
+    coalesce((select jsonb_agg(to_jsonb(x) order by x.created_at desc) from public.payments x where x.date like v_month || '%'),'[]'::jsonb),
+    coalesce((select jsonb_agg(to_jsonb(x) order by x.created_at desc) from public.expenses x where x.date like v_month || '%'),'[]'::jsonb),
+    'سجل حي للشهر الحالي يتم تحديثه تلقائيًا.', now()
+  )
+  on conflict (month_key) do update set
+    archived_at=excluded.archived_at, archived_by=excluded.archived_by,
+    total_income=excluded.total_income, total_expenses=excluded.total_expenses,
+    net_profit=excluded.net_profit, payments_count=excluded.payments_count,
+    expenses_count=excluded.expenses_count, active_players_count=excluded.active_players_count,
+    overdue_players_count=excluded.overdue_players_count, players_count=excluded.players_count,
+    coaches_count=excluded.coaches_count, payments=excluded.payments, expenses=excluded.expenses,
+    notes=excluded.notes, updated_at=now();
+  return jsonb_build_object('success',true,'month_key',v_month,'total_income',v_income,'total_expenses',v_expenses);
+end; $$;
+revoke all on function public.refresh_current_month_archive(text) from public;
+grant execute on function public.refresh_current_month_archive(text) to service_role;
+
+notify pgrst, 'reload schema';
+
+-- V12.1 compatibility: refresh PostgREST schema after RPC creation.
+notify pgrst, 'reload schema';

@@ -3,14 +3,15 @@ import {
   Settings as SettingsIcon, Save, ShieldCheck, Bell, Download, RotateCcw,
   CheckCircle, MessageSquare, HardDrive, Volume2, Play, Upload, Palette,
   Monitor, KeyRound, UserRound, Building2, CalendarDays, Gauge, LockKeyhole,
-  Database, Trash2, RefreshCw, Clock3, AlertTriangle, Zap, Server, HardDriveDownload
+  Database, Trash2, RefreshCw, Clock3, AlertTriangle, Zap, Server, HardDriveDownload, FileText
 } from 'lucide-react';
 import { AcademySettings } from '../types';
 import { soundAlertManager } from '../utils/soundAlert';
 import * as XLSX from 'xlsx';
 import { SystemToast, SystemToastType } from '../components/SystemToast';
 import { getDesktopNotificationPermission, requestDesktopNotificationPermission, sendDesktopNotification } from '../utils/desktopNotifier';
-import { updateAdminCredentials } from '../services/api';
+import { updateAdminCredentials, getExcelOnlineStatus, startExcelOnlineConnect, listExcelOnlineWorkbooks, selectExcelOnlineWorkbook, createExcelOnlineWorkbook, syncExcelOnlineApi, disconnectExcelOnlineApi, downloadExcelOnlineApi, uploadExcelOnlineApi } from '../services/api';
+import { connectExcelFile, ensureExcelPermission, restoreExcelHandle, readExcelWorkbook, writeExcelWorkbook, getExcelSyncMeta, markExcelConnected, markExcelDisconnected, markExcelFileHash, markExcelImported, markExcelError } from '../utils/excelSync';
 
 interface SettingsViewProps {
   settings: AcademySettings;
@@ -22,6 +23,9 @@ interface SettingsViewProps {
   isDbConnected?: boolean;
   currentUsername?: string;
   onCredentialsChanged?: (username: string) => void;
+  excelDataRevision?: number;
+  buildExcelWorkbook?: () => XLSX.WorkBook;
+  onAutoImportExcel?: (data: any) => Promise<void>;
 }
 
 type SecurityPrefs = {
@@ -49,6 +53,7 @@ const readLocal = <T,>(key: string, fallback: T): T => {
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings, onSaveSettings, onResetData, onExportAllData, onImportAllData,
   onStartNewMonth, isDbConnected, currentUsername = 'admin', onCredentialsChanged,
+  excelDataRevision = 0, buildExcelWorkbook, onAutoImportExcel,
 }) => {
   const [formData, setFormData] = useState<AcademySettings>(settings);
   const [savedSuccess, setSavedSuccess] = useState(false);
@@ -66,6 +71,82 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [savingCredentials, setSavingCredentials] = useState(false);
+  const [excelSync, setExcelSync] = useState(() => getExcelSyncMeta());
+  const [excelCloud, setExcelCloud] = useState<any>({ connected: false });
+  const [excelEmail, setExcelEmail] = useState('');
+  const [excelWorkbooks, setExcelWorkbooks] = useState<any[]>([]);
+  const excelUploadRef = useRef<HTMLInputElement>(null);
+  const excelHandleRef = useRef<FileSystemFileHandle | null>(null);
+  const excelBusyRef = useRef(false);
+  const lastExcelRevisionRef = useRef(-1);
+  const lastExcelHashRef = useRef('');
+  const pendingExcelHashRef = useRef('');
+  const pendingExcelStableCountRef = useRef(0);
+  const buildExcelWorkbookRef = useRef(buildExcelWorkbook);
+  const onAutoImportExcelRef = useRef(onAutoImportExcel);
+  useEffect(() => { buildExcelWorkbookRef.current = buildExcelWorkbook; onAutoImportExcelRef.current = onAutoImportExcel; }, [buildExcelWorkbook, onAutoImportExcel]);
+
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await getExcelOnlineStatus();
+        if (!cancelled) { setExcelCloud(status); setExcelEmail(status.email || ''); }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const refreshExcelCloud = async () => {
+    const status = await getExcelOnlineStatus();
+    setExcelCloud(status);
+    setExcelEmail(status.email || '');
+    return status;
+  };
+
+  const loadExcelWorkbooks = async () => {
+    try { const files = await listExcelOnlineWorkbooks(); setExcelWorkbooks(files); }
+    catch (e: any) { showToast('error', 'تعذر قراءة ملفات Excel', e?.message); }
+  };
+
+  const connectExcelCloud = () => {
+    startExcelOnlineConnect(excelEmail);
+  };
+
+  const createExcelCloud = async () => {
+    try {
+      const name = window.prompt('اسم ملف Excel الجديد', 'IFC_Academy.xlsx') || 'IFC_Academy.xlsx';
+      const item = await createExcelOnlineWorkbook(name);
+      await refreshExcelCloud();
+      showToast('success', 'تم إنشاء Excel Online', `تم إنشاء ${item.name} وربطه بالنظام.`);
+    } catch (e: any) { showToast('error', 'تعذر إنشاء Excel', e?.message); }
+  };
+
+  const syncExcelCloudNow = async () => {
+    try {
+      const result = await syncExcelOnlineApi('auto');
+      if (result.direction === 'excel_to_system' && onAutoImportExcel && result.sheets) await onAutoImportExcel(result.sheets);
+      await refreshExcelCloud();
+      if (result.direction === 'conflict') showToast('error', 'تعارض Excel', result.message);
+      else showToast('success', 'تمت مزامنة Excel Online', result.direction === 'excel_to_system' ? 'تم جلب تعديلات Excel إلى النظام.' : 'تم حفظ بيانات النظام في Excel.');
+    } catch (e: any) { showToast('error', 'فشلت مزامنة Excel Online', e?.message); }
+  };
+
+  const downloadExcelCloud = async () => {
+    try {
+      const { blob, name } = await downloadExcelOnlineApi();
+      const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
+      showToast('success', 'تم تنزيل Excel', 'تم تنزيل نسخة Excel الحالية على الجهاز.');
+    } catch (e: any) { showToast('error', 'تعذر تنزيل Excel', e?.message); }
+  };
+
+  const uploadExcelCloud = async (file?: File) => {
+    if (!file) return;
+    try { await uploadExcelOnlineApi(file); await refreshExcelCloud(); showToast('success', 'تم رفع Excel', 'تم استبدال الملف السحابي بالملف الذي اخترته.'); }
+    catch (e: any) { showToast('error', 'تعذر رفع Excel', e?.message); }
+    finally { if (excelUploadRef.current) excelUploadRef.current.value = ''; }
+  };
 
   useEffect(() => setFormData(settings), [settings]);
   useEffect(() => setLoginUsername(currentUsername || 'admin'), [currentUsername]);
@@ -75,6 +156,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const showToast = (type: SystemToastType, title: string, message?: string) => {
     setToast({ open: true, type, title, message });
     window.setTimeout(() => setToast(p => ({ ...p, open: false })), 3500);
+  };
+
+  const applyThemePreset = (theme: AcademySettings['colorTheme']) => {
+    const presets: Record<string, { primary: string; background: string; navbar: string }> = {
+      'classic-blue': { primary: '#2563eb', background: '#020617', navbar: '#0b1120' },
+      'royal-gold': { primary: '#d4a72c', background: '#0b0a07', navbar: '#17130a' },
+      'emerald': { primary: '#10b981', background: '#03120e', navbar: '#061b15' },
+      'obsidian': { primary: '#a855f7', background: '#050509', navbar: '#0d0a14' },
+      'custom': { primary: formData.primaryColor || '#2563eb', background: formData.backgroundColor || '#020617', navbar: formData.navbarColor || '#0b1120' },
+    };
+    const p = presets[theme || 'classic-blue'] || presets['classic-blue'];
+    setFormData(prev => ({ ...prev, colorTheme: theme, primaryColor: p.primary, backgroundColor: p.background, navbarColor: p.navbar }));
   };
 
   const save = async (e?: React.FormEvent) => {
@@ -107,6 +200,60 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setSavingCredentials(false);
     }
   };
+
+  const refreshExcelSyncState = () => setExcelSync(getExcelSyncMeta());
+
+  const connectAutoExcel = async () => {
+    try {
+      const result = await connectExcelFile();
+      excelHandleRef.current = result.handle;
+      markExcelConnected(result.handle.name);
+      const workbook = buildExcelWorkbook?.();
+      if (workbook) {
+        const hash = await writeExcelWorkbook(result.handle, workbook);
+        markExcelFileHash(hash);
+        lastExcelHashRef.current = hash;
+        lastExcelRevisionRef.current = excelDataRevision;
+      }
+      window.dispatchEvent(new Event('ifc-excel-connected'));
+      refreshExcelSyncState();
+      showToast('success', 'تم ربط Excel تلقائيًا', 'سيتم تحديث ملف Excel تلقائيًا، وأي تعديل خارجي عليه سيُستورد بعد التأكد من ثبات الملف.');
+    } catch (e: any) {
+      showToast('error', 'تعذر ربط Excel', e?.message || 'حاول مرة أخرى من Chrome أو Edge.');
+    }
+  };
+
+  const requestExcelPermission = async () => {
+    const handle = excelHandleRef.current || await restoreExcelHandle();
+    if (!handle) return connectAutoExcel();
+    const ok = await ensureExcelPermission(handle);
+    if (!ok) return showToast('error', 'صلاحية Excel مطلوبة', 'اسمح للنظام بالوصول إلى ملف Excel حتى تعمل المزامنة التلقائية.');
+    excelHandleRef.current = handle;
+    markExcelConnected(handle.name);
+    window.dispatchEvent(new Event('ifc-excel-connected'));
+    refreshExcelSyncState();
+  };
+
+  const disconnectAutoExcel = () => {
+    excelHandleRef.current = null;
+    markExcelDisconnected();
+    window.dispatchEvent(new Event('ifc-excel-disconnected'));
+    refreshExcelSyncState();
+    showToast('success', 'تم فصل Excel', 'لن تتم أي قراءة أو كتابة تلقائية للملف.');
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const handle = await restoreExcelHandle();
+      if (!handle || cancelled) return;
+      excelHandleRef.current = handle;
+      markExcelConnected(handle.name);
+      refreshExcelSyncState();
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
 
   const requestDesktop = async () => {
     const granted = await requestDesktopNotificationPermission();
@@ -233,7 +380,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         {tab === 'appearance' && <Section title="المظهر والهوية البصرية" icon={<Palette className="w-4 h-4 text-purple-400" />}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Field label="رابط اللوجو"><input value={formData.customLogoUrl || ''} onChange={e=>setFormData({...formData,customLogoUrl:e.target.value})} placeholder="https://..." /></Field>
-            <Field label="الثيم"><select value={formData.colorTheme || 'classic-blue'} onChange={e=>setFormData({...formData,colorTheme:e.target.value as any})}><option value="classic-blue">Classic Blue</option><option value="royal-gold">Royal Gold</option><option value="emerald">Emerald</option><option value="obsidian">Obsidian</option><option value="custom">Custom</option></select></Field>
+            <Field label="الثيم"><select value={formData.colorTheme || 'classic-blue'} onChange={e=>applyThemePreset(e.target.value as any)}><option value="classic-blue">Classic Blue</option><option value="royal-gold">Royal Gold</option><option value="emerald">Emerald</option><option value="obsidian">Obsidian</option><option value="custom">Custom</option></select></Field>
             <ColorField label="اللون الأساسي" value={formData.primaryColor || '#2563eb'} onChange={v=>setFormData({...formData,primaryColor:v})}/>
             <ColorField label="لون الخلفية" value={formData.backgroundColor || '#020617'} onChange={v=>setFormData({...formData,backgroundColor:v})}/>
             <ColorField label="لون الشريط الجانبي" value={formData.navbarColor || '#0b1120'} onChange={v=>setFormData({...formData,navbarColor:v})}/>
@@ -268,13 +415,58 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {tab === 'backup' && <>
           <Section title="النسخ الاحتياطي والاسترجاع" icon={<HardDrive className="w-4 h-4 text-blue-400" />}>
+          <Section title="Excel Online / OneDrive — الربط الحقيقي" icon={<Server className="w-4 h-4 text-sky-400" />}>
+            <div className="p-4 rounded-xl bg-sky-500/10 border border-sky-500/20 text-xs text-sky-100 leading-6">
+              هذا هو الربط السحابي الحقيقي: حساب Microsoft يتم تسجيله من Microsoft نفسها، وملف <b>.xlsx</b> يُحفظ داخل OneDrive. النظام يستطيع إنشاء الملف، اختياره، تنزيله للجهاز، رفع نسخة منه، والمزامنة مع Supabase. لا تكتب كلمة مرور Microsoft داخل IFC.
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Field label="إيميل Microsoft / Excel"><input value={excelEmail} onChange={e=>setExcelEmail(e.target.value)} placeholder="example@outlook.com" dir="ltr" /></Field>
+              <div className="flex items-end gap-2"><button type="button" onClick={connectExcelCloud} className="btn-blue flex-1"><KeyRound className="w-4 h-4"/> ربط / تغيير حساب Microsoft</button></div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <Stat icon={<Database/>} label="حساب Microsoft" value={excelCloud.connected ? (excelCloud.email || 'متصل') : 'غير مربوط'} />
+              <Stat icon={<FileText/>} label="ملف Excel" value={excelCloud.workbook?.name || 'لم يتم اختيار ملف'} />
+              <Stat icon={<RefreshCw/>} label="آخر مزامنة" value={excelCloud.lastSyncedAt ? new Date(excelCloud.lastSyncedAt).toLocaleString('ar-EG') : 'لم تتم بعد'} />
+              <Stat icon={<ShieldCheck/>} label="المصدر الأساسي" value="Supabase" />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <button type="button" disabled={!excelCloud.connected} onClick={loadExcelWorkbooks} className="btn-blue"><RefreshCw className="w-4 h-4"/> اختيار ملف Excel</button>
+              <button type="button" disabled={!excelCloud.connected} onClick={createExcelCloud} className="btn-green"><FileText className="w-4 h-4"/> إنشاء ملف الأكاديمية</button>
+              <button type="button" disabled={!excelCloud.workbook} onClick={syncExcelCloudNow} className="btn-blue"><RefreshCw className="w-4 h-4"/> مزامنة الآن</button>
+              <button type="button" disabled={!excelCloud.workbook} onClick={downloadExcelCloud} className="btn-blue"><Download className="w-4 h-4"/> تنزيل Excel للجهاز</button>
+              <button type="button" disabled={!excelCloud.workbook} onClick={()=>excelUploadRef.current?.click()} className="btn-green"><Upload className="w-4 h-4"/> رفع Excel من الجهاز</button>
+              <button type="button" disabled={!excelCloud.connected} onClick={async()=>{try{await disconnectExcelOnlineApi();setExcelCloud({connected:false});setExcelWorkbooks([]);showToast('success','تم فصل Microsoft Excel','يمكنك ربط حساب آخر في أي وقت.')}catch(e:any){showToast('error','تعذر الفصل',e?.message)}}} className="btn-gray"><AlertTriangle className="w-4 h-4"/> فصل الحساب</button>
+            </div>
+            <input ref={excelUploadRef} type="file" accept=".xlsx" className="hidden" onChange={e=>uploadExcelCloud(e.target.files?.[0])} />
+            {excelWorkbooks.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-56 overflow-auto p-1">{excelWorkbooks.map((file:any)=><button key={file.id} type="button" onClick={async()=>{try{await selectExcelOnlineWorkbook(file.id);await refreshExcelCloud();setExcelWorkbooks([]);showToast('success','تم اختيار ملف Excel',file.name)}catch(e:any){showToast('error','تعذر اختيار الملف',e?.message)}}} className="text-right p-3 rounded-xl bg-white/[0.04] border border-white/10 hover:border-sky-400/40"><div className="text-xs font-black text-white">{file.name}</div><div className="text-[10px] text-slate-500 mt-1">{file.size ? `${Math.round(file.size/1024)} KB` : ''}</div></button>)}</div>}
+          </Section>
+
+          <Section title="Excel محلي — اختياري" icon={<RefreshCw className="w-4 h-4 text-emerald-400" />}>
+            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-100 leading-6">
+              هذا الربط المحلي اختياري فقط. الربط الأساسي الموصى به الآن هو Excel Online / OneDrive بالأعلى. يمكنك استخدام هذا الخيار كملف محلي على نفس الجهاز. في أوراق منفصلة، ويقرأ التعديلات الخارجية ويكتب تغييرات النظام تلقائيًا كل 30 ثانية. عند وجود تعديل من الطرفين في نفس الوقت، المزامنة تتوقف بدل ما تعمل لخبطة أو تستبدل بيانات.
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <button type="button" onClick={connectAutoExcel} className="btn-green"><RefreshCw className="w-4 h-4"/> {excelSync.connected ? 'إعادة ربط ملف Excel' : 'ربط Excel تلقائيًا'}</button>
+              {excelSync.connected && <button type="button" onClick={requestExcelPermission} className="btn-blue"><CheckCircle className="w-4 h-4"/> السماح بالمزامنة</button>}
+              {excelSync.connected && <button type="button" onClick={disconnectAutoExcel} className="btn-gray"><AlertTriangle className="w-4 h-4"/> فصل Excel</button>}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <Stat icon={<Database/>} label="الحالة" value={excelSync.connected ? `متصل: ${excelSync.fileName || 'Excel'}` : 'غير مربوط'} />
+              <Stat icon={<RefreshCw/>} label="الدورة" value="كل 30 ثانية عند التغيير" />
+              <Stat icon={<ShieldCheck/>} label="التعارض" value={excelSync.error?.startsWith('تعارض') ? 'موقوف للحماية' : 'حماية تلقائية'} />
+            </div>
+            {excelSync.error && <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-200 leading-6">{excelSync.error}</div>}
+            {excelSync.lastImportAt && <div className="text-[11px] text-slate-500">آخر استيراد تلقائي: {new Date(excelSync.lastImportAt).toLocaleString('ar-EG')}</div>}
+            {excelSync.lastExportAt && <div className="text-[11px] text-slate-500">آخر تصدير تلقائي: {new Date(excelSync.lastExportAt).toLocaleString('ar-EG')}</div>}
+          </Section>
+
             <input ref={fileInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={importBackup}/>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <button type="button" onClick={onExportAllData} className="p-4 rounded-xl bg-blue-600/15 hover:bg-blue-600/25 border border-blue-500/25 text-blue-200 font-bold text-xs flex items-center gap-3"><Download className="w-5 h-5"/> تصدير نسخة كاملة Excel</button>
               <button type="button" onClick={()=>fileInputRef.current?.click()} className="p-4 rounded-xl bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/25 text-emerald-200 font-bold text-xs flex items-center gap-3"><Upload className="w-5 h-5"/> استرجاع نسخة Excel</button>
             </div>
             <div className="mt-4 p-4 rounded-xl bg-white/[0.03] border border-white/10 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-xs text-slate-300"><Stat icon={<Database/>} label="البيانات" value="لاعبين + مدربين + حضور + مالية"/><Stat icon={<RefreshCw/>} label="المزامنة" value="كل 60 ثانية عند التغيير"/><Stat icon={<HardDrive/>} label="المجلد" value="C:\\IFC_ACADEMY_DATA"/><Stat icon={<ShieldCheck/>} label="الحماية" value="مفتاح Supabase السري محلي فقط"/></div>
-            <div className="mt-3 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-200 leading-6">ملف Excel يظل خيار الاستيراد والاسترجاع للمستخدم. أما النسخة التلقائية كل دقيقة فتُحفظ محليًا كبيانات تشغيلية داخل <b>Latest</b> مع نسخة يومية داخل <b>Backups</b>.</div>
+            <div className="mt-3 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-200 leading-6">ملف Excel يعمل كمرآة تلقائية كاملة لبيانات الأكاديمية، بالإضافة إلى كونه خيارًا للاستيراد والاسترجاع للمستخدم. أما النسخة التلقائية كل دقيقة فتُحفظ محليًا كبيانات تشغيلية داخل <b>Latest</b> مع نسخة يومية داخل <b>Backups</b>.</div>
           </Section>
           <Section title="دورة الشهر" icon={<Clock3 className="w-4 h-4 text-amber-400" />}>
             <p className="text-xs text-slate-400">أرشفة بيانات الشهر وإطلاق دورة شهر جديدة مع الحفاظ على السجل التاريخي.</p>

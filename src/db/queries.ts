@@ -488,8 +488,27 @@ export async function getAcademySyncFingerprint(): Promise<string> {
 
 export async function resetAcademyData(): Promise<{ success: boolean; deleted: Record<string, number> }> {
   const { data, error } = await supabaseServer.rpc('reset_academy_data');
-  if (error) fail('reset academy data', error);
-  return (data || { success: true, deleted: {} }) as { success: boolean; deleted: Record<string, number> };
+  if (!error) return (data || { success: true, deleted: {} }) as { success: boolean; deleted: Record<string, number> };
+  // Older deployments may not have the RPC in PostgREST schema cache yet.
+  // Fall back to the same logical reset so the UI never gets stuck on HTTP 500.
+  console.warn('reset_academy_data RPC unavailable; using safe server fallback:', error.message);
+  const tables = ['player_sessions', 'players', 'payments', 'expenses', 'coaches', 'monthly_archives'];
+  const deleted: Record<string, number> = {};
+  for (const table of tables) {
+    const { count, error: countError } = await supabaseServer.from(table).select('*', { count: 'exact', head: true });
+    if (countError) fail(`count ${table} before reset`, countError);
+    deleted[table] = Number(count || 0);
+  }
+  // Service-role deletes are protected by the server auth middleware. The canonical SQL RPC
+  // remains preferred because it is transactional; this path exists for first deployment only.
+  for (const table of tables) {
+    const { error: deleteError } = await supabaseServer.from(table).delete().not('id', 'is', null);
+    if (deleteError) fail(`clear ${table}`, deleteError);
+  }
+  const { data: settings } = await supabaseServer.from('academy_settings').select('data_epoch').eq('id', 1).maybeSingle();
+  const nextEpoch = Number(settings?.data_epoch || 1) + 1;
+  await supabaseServer.from('academy_settings').upsert({ id: 1, data_epoch: nextEpoch, updated_at: new Date().toISOString() });
+  return { success: true, deleted };
 }
 
 // ----------------- SETTINGS -----------------
@@ -525,6 +544,8 @@ export async function getMonthlyArchives(): Promise<MonthlyArchiveRecord[]> {
     expensesCount: a.expenses_count,
     activePlayersCount: a.active_players_count ?? 0,
     overduePlayersCount: a.overdue_players_count ?? 0,
+    playersCount: a.players_count ?? 0,
+    coachesCount: a.coaches_count ?? 0,
     payments: a.payments || [],
     expenses: a.expenses || [],
     notes: a.notes || '',
@@ -544,10 +565,61 @@ export async function createMonthlyArchive(a: MonthlyArchiveRecord): Promise<Mon
     expenses_count: a.expensesCount || 0,
     active_players_count: a.activePlayersCount || 0,
     overdue_players_count: a.overduePlayersCount || 0,
+    players_count: a.playersCount || 0,
+    coaches_count: a.coachesCount || 0,
     payments: a.payments || [],
     expenses: a.expenses || [],
     notes: a.notes || '',
   }, { onConflict: 'month_key' });
   if (error) fail('create monthly archive', error); return a;
 }
+export async function refreshCurrentMonthArchive(archivedBy = 'المدير العام (Admin)'): Promise<MonthlyArchiveRecord> {
+  const now = new Date();
+  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const monthLabel = now.toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' });
+  const [{ data: payments, error: pe }, { data: expenses, error: ee }, { data: players, error: ple }, { data: coaches, error: ce }] = await Promise.all([
+    supabaseServer.from('payments').select('*').like('date', `${monthKey}%`).order('created_at', { ascending: false }),
+    supabaseServer.from('expenses').select('*').like('date', `${monthKey}%`).order('created_at', { ascending: false }),
+    supabaseServer.from('players').select('id,status'),
+    supabaseServer.from('coaches').select('id,status'),
+  ]);
+  if (pe) fail('refresh archive payments', pe);
+  if (ee) fail('refresh archive expenses', ee);
+  if (ple) fail('refresh archive players', ple);
+  if (ce) fail('refresh archive coaches', ce);
+  const mappedPayments = (payments || []).map((p: any) => ({
+    id: p.id, invoiceNumber: p.invoice_number, type: p.type || 'اشتراك لاعب', playerId: p.player_id || undefined,
+    playerName: p.player_name, memberNumber: p.member_number || undefined, team: p.team || undefined, coachId: p.coach_id || undefined,
+    amount: p.amount, method: p.method || 'كاش', date: p.date, createdAt: p.created_at || undefined, periodMonth: p.period_month,
+    status: p.status || 'مدفوع', notes: p.notes || '', collectedBy: p.collected_by || 'مسؤول الخزينة',
+  } as PaymentRecord));
+  const mappedExpenses = (expenses || []).map((e: any) => ({
+    id: e.id, title: e.title, category: e.category, amount: e.amount, date: e.date, paidTo: e.paid_to,
+    coachId: e.coach_id || undefined, method: e.method || 'كاش', notes: e.notes || '',
+  } as ExpenseRecord));
+  const totalIncome = mappedPayments.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const totalExpenses = mappedExpenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const activePlayersCount = (players || []).filter((p: any) => p.status === 'نشط').length;
+  const overduePlayersCount = (players || []).filter((p: any) => p.status === 'متأخر').length;
+  const archive: MonthlyArchiveRecord = {
+    id: `arch-live-${monthKey}`,
+    monthKey, monthLabel, archivedAt: now.toISOString(), archivedBy,
+    totalIncome, totalExpenses, netProfit: totalIncome - totalExpenses,
+    paymentsCount: mappedPayments.length, expensesCount: mappedExpenses.length,
+    activePlayersCount, overduePlayersCount, playersCount: (players || []).length, coachesCount: (coaches || []).length,
+    payments: mappedPayments, expenses: mappedExpenses,
+    notes: 'سجل حي للشهر الحالي يتم تحديثه تلقائيًا مع كل إضافة أو تحصيل أو مصروف.',
+  };
+  const { error } = await supabaseServer.from('monthly_archives').upsert({
+    id: archive.id, month_key: archive.monthKey, month_label: archive.monthLabel, archived_at: archive.archivedAt,
+    archived_by: archive.archivedBy, total_income: archive.totalIncome, total_expenses: archive.totalExpenses,
+    net_profit: archive.netProfit, payments_count: archive.paymentsCount, expenses_count: archive.expensesCount,
+    active_players_count: archive.activePlayersCount, overdue_players_count: archive.overduePlayersCount,
+    players_count: archive.playersCount, coaches_count: archive.coachesCount,
+    payments: archive.payments, expenses: archive.expenses, notes: archive.notes, updated_at: now.toISOString(),
+  }, { onConflict: 'month_key' });
+  if (error) fail('refresh current month archive', error);
+  return archive;
+}
+
 export async function deleteMonthlyArchive(id: string): Promise<void> { const { error } = await supabaseServer.from('monthly_archives').delete().eq('id', id); if (error) fail('delete monthly archive', error); }
