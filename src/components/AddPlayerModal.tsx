@@ -34,6 +34,7 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
   const [phone, setPhone] = useState('');
   const [parentPhone, setParentPhone] = useState('');
   const [monthlyFee, setMonthlyFee] = useState<string>('');
+  // 0 = حصة واحدة، 1/3/6/12 = اشتراك بالأشهر
   const [subscriptionDurationMonths, setSubscriptionDurationMonths] = useState<number>(1);
   const [paymentPeriodMonth, setPaymentPeriodMonth] = useState<string>(todayStr.slice(0, 7));
   const [totalSessions, setTotalSessions] = useState<number>(() => { try { return Math.max(1, Number(JSON.parse(localStorage.getItem('ifc_academy_prefs') || '{}').monthlySessions || 8)); } catch { return 8; } });
@@ -55,6 +56,8 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
       const eDate = playerToEdit.subscriptionEndDate || playerToEdit.subscriptionExpiry || calculateEndDateByMonths(sDate, 1);
       setSubscriptionStartDate(sDate);
       setSubscriptionEndDate(eDate);
+      const isSingleSession = (playerToEdit.subscriptionPlan || '').includes('حصة واحدة');
+      setSubscriptionDurationMonths(isSingleSession ? 0 : (playerToEdit.subscriptionPlan?.includes('3') ? 3 : playerToEdit.subscriptionPlan?.includes('6') ? 6 : playerToEdit.subscriptionPlan?.includes('12') ? 12 : 1));
       setPaymentPeriodMonth(sDate.slice(0, 7));
       setTotalSessions(Math.max(1, Number(playerToEdit.totalSessions || 8)));
       setPaymentMethod(playerToEdit.paymentMethod || 'كاش');
@@ -82,14 +85,15 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
   const handleDurationChange = (months: number) => {
     setSubscriptionDurationMonths(months);
     const start = subscriptionStartDate || todayStr;
-    const computedEnd = calculateEndDateByMonths(start, months);
+    const computedEnd = months === 0 ? start : calculateEndDateByMonths(start, months);
     setSubscriptionEndDate(computedEnd);
+    if (months === 0) setTotalSessions(1);
   };
 
   const handleStartDateChange = (val: string) => {
     setSubscriptionStartDate(val);
     if (val && !isNaN(new Date(val).getTime())) {
-      const computedEnd = calculateEndDateByMonths(val, subscriptionDurationMonths);
+      const computedEnd = subscriptionDurationMonths === 0 ? val : calculateEndDateByMonths(val, subscriptionDurationMonths);
       setSubscriptionEndDate(computedEnd);
     }
   };
@@ -163,7 +167,7 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
       subscriptionExpiry: endDate,
       monthlyFee: finalMonthlyFee,
       paymentMethod,
-      subscriptionPlan: `اشتراك شهري (${team})`,
+      subscriptionPlan: subscriptionDurationMonths === 0 ? 'حصة واحدة' : `اشتراك شهري (${team})`,
       status: computedStatus,
       avatarUrl: playerToEdit?.avatarUrl || '',
       attendedSessions: playerToEdit?.attendedSessions || 0,
@@ -367,8 +371,9 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
                 <Clock className="w-3.5 h-3.5 text-blue-400" />
                 <span>مدة الاشتراك *</span>
               </label>
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 {[
+                  { label: 'حصة واحدة', months: 0 },
                   { label: 'شهر (1)', months: 1 },
                   { label: '3 شهور', months: 3 },
                   { label: '6 شهور', months: 6 },
@@ -436,7 +441,7 @@ export const AddPlayerModal: React.FC<AddPlayerModalProps> = ({
               <input type="month" required value={paymentPeriodMonth} onChange={e=>setPaymentPeriodMonth(e.target.value)} className="w-full bg-white/[0.04] border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-hidden focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 font-mono" />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-400"/><span>عدد الحصص للشهر *</span></label>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-amber-400"/><span>{subscriptionDurationMonths === 0 ? 'عدد الحصص *' : 'عدد الحصص للشهر *'}</span></label>
               <input type="number" min={1} max={100} required value={totalSessions} onChange={e=>setTotalSessions(Math.max(1,Math.min(100,Number(e.target.value)||1)))} className="w-full bg-white/[0.04] border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-hidden focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20" />
             </div>
 

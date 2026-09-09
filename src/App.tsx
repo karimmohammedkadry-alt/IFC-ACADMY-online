@@ -408,9 +408,23 @@ export default function App() {
   const [systemToast, setSystemToast] = useState<{ open: boolean; type: SystemToastType; title: string; message?: string }>({ open: false, type: 'success', title: '' });
 
   useEffect(() => {
-    const loaded = loadNotifications();
-    setNotifications(loaded);
-    setNotificationTrash(getNotificationTrash());
+    const resetNotificationsForNewDay = () => {
+      const now = new Date();
+      const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const key = 'ifc_notifications_last_seen_day_v1';
+      const previousDay = localStorage.getItem(key);
+      let loaded = loadNotifications();
+      if (previousDay !== todayKey) {
+        loaded = loaded.map((n) => ({ ...n, read: true }));
+        saveNotifications(loaded);
+        localStorage.setItem(key, todayKey);
+      }
+      setNotifications(loaded);
+      setNotificationTrash(getNotificationTrash());
+    };
+    resetNotificationsForNewDay();
+    const timer = window.setInterval(resetNotificationsForNewDay, 60 * 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -703,7 +717,7 @@ export default function App() {
           monthlyFee: playerData.monthlyFee || 0,
           subscriptionPlan: playerData.subscriptionPlan || 'اشتراك شهري',
           status: isStillActive ? 'نشط' : 'متأخر',
-          totalSessions: playerData.totalSessions ?? Math.max(1, Number(academyPrefs.monthlySessions || 8)),
+          totalSessions: playerData.subscriptionPlan === 'حصة واحدة' ? 1 : (playerData.totalSessions ?? Math.max(1, Number(academyPrefs.monthlySessions || 8))),
           attendedSessions: 0,
           absentSessions: 0,
           attendanceRate: 0,

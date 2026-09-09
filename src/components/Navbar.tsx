@@ -75,7 +75,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             
             <div className="flex flex-col">
               <span className="font-black text-lg tracking-wider text-white uppercase font-sans">
-                {logoText || 'IFC'} <span style={{ color: primaryColor || '#eab308' }}>{academyName || 'ACADEMY'}</span>
+                {logoText || 'IFC'}
               </span>
             </div>
           </div>
@@ -142,18 +142,14 @@ export const Navbar: React.FC<NavbarProps> = ({
             <Bell
               style={{ color: primaryColor || '#eab308' }}
               className={`w-5 h-5 transition-transform ${
-                totalNotificationsCount > 0 || expiringIn3DaysCount > 0
+                totalNotificationsCount > 0
                   ? 'animate-bell-shake'
                   : 'group-hover:rotate-12 group-hover:scale-110'
               }`}
             />
-            {(totalNotificationsCount > 0 || expiringIn3DaysCount > 0) && (
+            {totalNotificationsCount > 0 && (
               <span className="absolute -top-1.5 -right-1.5 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 font-black text-[10px] min-w-[19px] h-[19px] px-1 rounded-full flex items-center justify-center shadow-lg shadow-yellow-500/50 border border-yellow-100 animate-pulse">
-                {totalNotificationsCount > 0
-                  ? totalNotificationsCount > 99
-                    ? '99+'
-                    : totalNotificationsCount
-                  : expiringIn3DaysCount}
+                {totalNotificationsCount > 99 ? '99+' : totalNotificationsCount}
               </span>
             )}
           </button>

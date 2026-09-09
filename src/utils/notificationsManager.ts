@@ -110,6 +110,23 @@ export const createNotification = (
   meta,
 });
 
+
+export const getSubscriptionWhatsAppMessage = (player: Player): string => {
+  const endDate = player.subscriptionEndDate || player.subscriptionExpiry || '';
+  const days = getDaysUntilExpiration(endDate);
+  const dayNotice = days === 0 ? 'ينتهي اليوم' : days === 1 ? 'ينتهي غداً' : days > 1 ? `ينتهي خلال ${days} أيام` : 'قد انتهى بالفعل';
+  return `مرحباً ولي أمر اللاعب (${player.name})، تحية طيبة من أكاديمية IFC للكيك بوكسينغ 🥊\n\nنود إحاطتكم بأن اشتراك اللاعب رقم #${player.memberNumber} ${dayNotice} بتاريخ ${endDate}.\n\nقيمة التجديد: ${player.monthlyFee} ج.م.\nيرجى المبادرة بالتجديد لضمان استمرار الحصص والتدريبات دون انقطاع.\nشاكرين تعاونكم الدائم معنا!`;
+};
+
+export const markNotificationsReadForToday = (notifications: AppNotification[]): AppNotification[] => {
+  const now = new Date();
+  const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const updated = notifications.map((n) => ({ ...n, read: true }));
+  try { localStorage.setItem('ifc_notifications_last_seen_day_v1', todayKey); } catch {}
+  saveNotifications(updated);
+  return updated;
+};
+
 /** Dynamic subscription alerts: one week before expiry, one session left, and overdue. */
 export const buildExpirationAlerts = (
   expiringSoonPlayers: Player[],
@@ -166,7 +183,7 @@ export const buildExpirationAlerts = (
       id,
       type: 'subscription_overdue',
       title: 'تنبيه عاجل: اشتراك منتهي ولم يُجدد',
-      message: `اشتراك اللاعب (${player.name}) منتهي ولم يتم تجديده. قيمة التجديد ${player.monthlyFee} ج.م.`,
+      message: getSubscriptionWhatsAppMessage(player),
       timestamp: new Date().toISOString(),
       read: false,
       category: 'subscriptions',

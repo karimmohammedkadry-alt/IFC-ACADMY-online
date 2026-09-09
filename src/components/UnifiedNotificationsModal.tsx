@@ -27,6 +27,7 @@ import {
   formatRemainingDaysArabic,
 } from '../utils/dateUtils';
 import { playerMatchesSearch, normalizeSearchText } from '../utils/playerSearch';
+import { getSubscriptionWhatsAppMessage } from '../utils/notificationsManager';
 
 interface UnifiedNotificationsModalProps {
   isOpen: boolean;
@@ -95,20 +96,11 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
   });
 
   const handleSendWhatsApp = (player: Player) => {
-    const days = getDaysUntilExpiration(player.subscriptionEndDate || player.subscriptionExpiry);
-    const dayNotice =
-      days === 0
-        ? 'ينتهي اليوم'
-        : days === 1
-        ? 'ينتهي غداً'
-        : days > 1
-        ? `ينتهي خلال ${days} أيام`
-        : 'قد انتهى بالفعل';
-
-    const text = encodeURIComponent(
-      `مرحباً ولي أمر اللاعب (${player.name})، تحية طيبة من أكاديمية IFC للكيك بوكسينغ 🥊 (international fight club)\n\nنود إحاطتكم بأن اشتراك الكيك بوكسينغ الخاص بعضوية رقم #${player.memberNumber} (${dayNotice}) بتاريخ ${player.subscriptionEndDate || player.subscriptionExpiry}.\n\nقيمة التجديد الشهري: ${player.monthlyFee} ج.م.\nطرق السداد المتاحة: (كاش بالخزينة / فودافون كاش / إنستاباي).\n\nيرجى المبادرة بالتجديد لضمان استمرار الحصص والتدريبات دون انقطاع.\nشاكرين تعاونكم الدائم معنا!`
-    );
-    window.open(`https://wa.me/2${player.parentPhone}?text=${text}`, '_blank');
+    const phone = (player.parentPhone || '').replace(/\D/g, '');
+    if (!phone) return;
+    const normalized = phone.startsWith('20') ? phone : `20${phone.replace(/^0+/, '')}`;
+    const text = encodeURIComponent(getSubscriptionWhatsAppMessage(player));
+    window.open(`https://wa.me/${normalized}?text=${text}`, '_blank');
   };
 
   const getNotificationIcon = (type: AppNotification['type']) => {
@@ -423,7 +415,7 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
                       {matchedPlayer && matchedPlayer.parentPhone && (
                         <button type="button" onClick={() => handleSendWhatsApp(matchedPlayer)} className="px-2.5 py-1 bg-emerald-600/80 hover:bg-emerald-600 text-white font-semibold rounded-lg text-xs transition-all cursor-pointer flex items-center gap-1">
                           <Send className="w-3 h-3" />
-                          <span>إرسال واتساب لولي الأمر</span>
+                          <span>إرسال لولي الأمر عبر واتساب</span>
                         </button>
                       )}
                     </div>
