@@ -1,0 +1,300 @@
+./supabase/migrations/005_v15_system_infrastructure.sql:82:grant execute on function public.cleanup_ifc_v15() to service_role;
+./supabase/migrations/003_excel_online_sync.sql:23:grant all on public.excel_connections to service_role;
+./sql/RESET_ACADEMY_DATA.sql:35:grant execute on function public.reset_academy_data() to service_role;
+./sql/RESET_ACADEMY_DATA.sql:40:grant execute on function public.academy_data_epoch() to service_role;
+./sql/supabase_schema.sql:8:  password_hash text,
+./sql/supabase_schema.sql:9:  password_salt text,
+./sql/supabase_schema.sql:19:alter table public.admin_credentials alter column password_hash drop not null;
+./sql/supabase_schema.sql:20:alter table public.admin_credentials alter column password_salt drop not null;
+./sql/supabase_schema.sql:179:-- Supabase Auth is the only authentication authority. The legacy password/session columns are not read by the application.
+./sql/supabase_schema.sql:270:grant execute on function public.reset_academy_data() to service_role;
+./sql/supabase_schema.sql:292:grant execute on function public.academy_sync_fingerprint() to service_role;
+./sql/supabase_schema.sql:302:grant execute on function public.academy_data_epoch() to service_role;
+./sql/supabase_schema.sql:350:grant execute on function public.refresh_current_month_archive(text) to service_role;
+./sql/supabase_schema.sql:439:grant execute on function public.cleanup_ifc_v15() to service_role;
+./src-tauri/capabilities/default.json:10:    "updater:default",
+./src-tauri/README_AR.md:5:- قاعدة البيانات المحلية: `ifc_academy.db` داخل AppConfig الخاصة بالتطبيق.
+./src-tauri/Cargo.toml:18:tauri-plugin-sql = { version = "2.3", features = ["sqlite"] }
+./src-tauri/Cargo.toml:19:tauri-plugin-updater = { version = "2.9" }
+./src-tauri/tauri.conf.json:50:    "updater": {
+./src-tauri/tauri.conf.json:51:      "pubkey": "__TAURI_UPDATE_PUBLIC_KEY__",
+./src-tauri/src/lib.rs:10:            app.handle().plugin(tauri_plugin_updater::Builder::new().build());
+./server.ts:38:import { supabaseServer, supabaseAuth } from './src/lib/supabase-server.ts';
+./server.ts:55:    await supabaseServer.from('audit_logs').insert({
+./server.ts:82:    if (supabaseServer.from) {
+./server.ts:83:      await supabaseServer.from('sync_conflicts').upsert({
+./server.ts:98:      await supabaseServer.from('sync_operations').upsert({
+./server.ts:117:    const { data: inserted, error: insertError } = await supabaseServer.from('idempotency_keys').insert({
+./server.ts:134:        const { data: existing } = await supabaseServer.from('idempotency_keys')
+./server.ts:138:          await supabaseServer.from('idempotency_keys').delete().eq('request_id', requestId);
+./server.ts:167:      await supabaseServer.from('idempotency_keys').update({
+./server.ts:186:      const { data, error } = await supabaseServer.auth.admin.createUser({
+./server.ts:188:        password: DEFAULT_ADMIN_PASSWORD,
+./server.ts:198:      const { data } = await supabaseServer.auth.admin.getUserById(existing.auth_user_id);
+./server.ts:203:    const { data: users, error: listError } = await supabaseServer.auth.admin.listUsers({ page: 1, perPage: 100 });
+./server.ts:211:    const { data, error } = await supabaseServer.auth.admin.createUser({
+./server.ts:213:      password: DEFAULT_ADMIN_PASSWORD,
+./server.ts:220:    throw new Error('Supabase Auth is not ready. Run the updated sql/supabase_schema.sql in Supabase SQL Editor.', { cause: error });
+./server.ts:298:      const password = String(req.body?.password || '');
+./server.ts:304:      const { data, error } = await supabaseAuth.auth.signInWithPassword({
+./server.ts:306:        password,
+./server.ts:312:      await supabaseServer.auth.admin.updateUserById(data.user.id, {
+./server.ts:333:      const { data, error } = await supabaseServer.auth.getUser(token);
+./server.ts:347:      const { data, error } = await supabaseAuth.auth.refreshSession({ refresh_token: refreshToken });
+./server.ts:366:      const { data: authData, error: authError } = await supabaseServer.auth.getUser(token);
+./server.ts:376:      const { error: updateError } = await supabaseServer.auth.admin.updateUserById(authData.user.id, {
+./server.ts:377:        password: newPassword,
+./server.ts:417:      const { data, error } = await supabaseServer.from('academy_settings').select('id,academy_name,updated_at').eq('id', 1).maybeSingle();
+./server.ts:434:      const { data, error } = await supabaseServer.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(limit);
+./server.ts:445:        supabaseServer.from('players').select('id,name,member_number,deleted_at').not('deleted_at', 'is', null).order('deleted_at', { ascending: false }).limit(500),
+./server.ts:446:        supabaseServer.from('coaches').select('id,name,deleted_at').not('deleted_at', 'is', null).order('deleted_at', { ascending: false }).limit(500),
+./server.ts:447:        supabaseServer.from('payments').select('id,invoice_number,player_name,amount,deleted_at').not('deleted_at', 'is', null).order('deleted_at', { ascending: false }).limit(500),
+./server.ts:448:        supabaseServer.from('expenses').select('id,title,amount,deleted_at').not('deleted_at', 'is', null).order('deleted_at', { ascending: false }).limit(500),
+./server.ts:449:        supabaseServer.from('monthly_archives').select('id,month_key,month_label,deleted_at').not('deleted_at', 'is', null).order('deleted_at', { ascending: false }).limit(500),
+./server.ts:470:      const { error } = await supabaseServer.from(table).update({ deleted_at: null, updated_at: new Date().toISOString() }).eq('id', req.params.id);
+./server.ts:483:      const { error } = await supabaseServer.from(table).delete().eq('id', req.params.id);
+./server.ts:498:        supabaseServer.from('payments').select('*').gte('date', from).lte('date', to).is('deleted_at', null).order('date', { ascending: true }),
+./server.ts:499:        supabaseServer.from('expenses').select('*').gte('date', from).lte('date', to).is('deleted_at', null).order('date', { ascending: true }),
+./server.ts:500:        supabaseServer.from('player_sessions').select('*').gte('date', from).lte('date', to).order('date', { ascending: true }),
+./server.ts:550:      const { data: player } = await supabaseServer.from('players').select('*').eq('id', req.params.id).maybeSingle();
+./.github/workflows/windows-release.yml:37:      - name: Prepare signed updater configuration
+./.github/workflows/windows-release.yml:42:          TAURI_UPDATE_PUBLIC_KEY: ${{ secrets.TAURI_UPDATE_PUBLIC_KEY }}
+./.github/workflows/windows-release.yml:43:          RAILWAY_APP_URL: ${{ secrets.RAILWAY_APP_URL }}
+./.github/workflows/windows-release.yml:49:          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+./.github/workflows/windows-release.yml:50:          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+./.github/workflows/windows-release.yml:51:          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+./.github/workflows/windows-release.yml:52:          RAILWAY_APP_URL: ${{ secrets.RAILWAY_APP_URL }}
+./.github/workflows/windows-release.yml:58:            Push to GitHub builds a new signed Windows installer and updater artifact.
+./V15_UPGRADE_NOTES_AR.md:17:- `VITE_API_BASE_URL` غير مستخدم؛ عنوان Railway للـ Tauri يتم توليده من `RAILWAY_APP_URL` أثناء Release.
+./V15_UPGRADE_NOTES_AR.md:21:`supabase/migrations/005_v15_system_infrastructure.sql`
+./V15_UPGRADE_NOTES_AR.md:23:أو استخدم النسخة المجمعة `sql/supabase_schema.sql`.
+./V15_UPGRADE_NOTES_AR.md:27:- `TAURI_UPDATE_PUBLIC_KEY`
+./V15_UPGRADE_NOTES_AR.md:28:- `TAURI_SIGNING_PRIVATE_KEY`
+./V15_UPGRADE_NOTES_AR.md:29:- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (اختياري)
+./scripts/prepare-tauri-release.mjs:6:const publicKey = process.env.TAURI_UPDATE_PUBLIC_KEY;
+./scripts/prepare-tauri-release.mjs:7:const railwayUrl = String(process.env.RAILWAY_APP_URL || '').trim().replace(/\/$/, '');
+./scripts/prepare-tauri-release.mjs:15:if (!publicKey || publicKey.includes('__TAURI_UPDATE_PUBLIC_KEY__')) {
+./scripts/prepare-tauri-release.mjs:16:  throw new Error('Missing TAURI_UPDATE_PUBLIC_KEY GitHub secret.');
+./scripts/prepare-tauri-release.mjs:19:  throw new Error('Missing/invalid RAILWAY_APP_URL. Set it to your HTTPS Railway public domain, e.g. https://your-app.up.railway.app');
+./scripts/prepare-tauri-release.mjs:23:config.plugins.updater.pubkey = publicKey.trim();
+./scripts/prepare-tauri-release.mjs:24:config.plugins.updater.endpoints = [
+./.env.example:1:SUPABASE_URL=https://rmrznlnzegbkabmxcyyn.supabase.co
+./.env.example:3:SUPABASE_SECRET_KEY=sb_secret_...
+./.env.example:10:MICROSOFT_REDIRECT_URI=https://YOUR-RAILWAY-DOMAIN/api/excel/callback
+./.env.example:11:APP_URL=https://YOUR-RAILWAY-DOMAIN
+./.env.example:16:RAILWAY_APP_URL=https://YOUR-RAILWAY-DOMAIN.up.railway.app
+./grep.txt:1:./supabase/migrations/005_v15_system_infrastructure.sql:82:grant execute on function public.cleanup_ifc_v15() to service_role;
+./grep.txt:2:./supabase/migrations/003_excel_online_sync.sql:23:grant all on public.excel_connections to service_role;
+./grep.txt:3:./sql/RESET_ACADEMY_DATA.sql:35:grant execute on function public.reset_academy_data() to service_role;
+./grep.txt:4:./sql/RESET_ACADEMY_DATA.sql:40:grant execute on function public.academy_data_epoch() to service_role;
+./grep.txt:5:./sql/supabase_schema.sql:8:  password_hash text,
+./grep.txt:6:./sql/supabase_schema.sql:9:  password_salt text,
+./grep.txt:7:./sql/supabase_schema.sql:19:alter table public.admin_credentials alter column password_hash drop not null;
+./grep.txt:8:./sql/supabase_schema.sql:20:alter table public.admin_credentials alter column password_salt drop not null;
+./grep.txt:9:./sql/supabase_schema.sql:179:-- Supabase Auth is the only authentication authority. The legacy password/session columns are not read by the application.
+./grep.txt:10:./sql/supabase_schema.sql:270:grant execute on function public.reset_academy_data() to service_role;
+./grep.txt:11:./sql/supabase_schema.sql:292:grant execute on function public.academy_sync_fingerprint() to service_role;
+./grep.txt:12:./sql/supabase_schema.sql:302:grant execute on function public.academy_data_epoch() to service_role;
+./grep.txt:13:./sql/supabase_schema.sql:350:grant execute on function public.refresh_current_month_archive(text) to service_role;
+./grep.txt:14:./sql/supabase_schema.sql:439:grant execute on function public.cleanup_ifc_v15() to service_role;
+./grep.txt:15:./src-tauri/capabilities/default.json:10:    "updater:default",
+./grep.txt:16:./src-tauri/README_AR.md:5:- قاعدة البيانات المحلية: `ifc_academy.db` داخل AppConfig الخاصة بالتطبيق.
+./grep.txt:17:./src-tauri/Cargo.toml:18:tauri-plugin-sql = { version = "2.3", features = ["sqlite"] }
+./grep.txt:18:./src-tauri/Cargo.toml:19:tauri-plugin-updater = { version = "2.9" }
+./grep.txt:19:./src-tauri/tauri.conf.json:50:    "updater": {
+./grep.txt:20:./src-tauri/tauri.conf.json:51:      "pubkey": "__TAURI_UPDATE_PUBLIC_KEY__",
+./grep.txt:21:./src-tauri/src/lib.rs:10:            app.handle().plugin(tauri_plugin_updater::Builder::new().build());
+./grep.txt:22:./server.ts:38:import { supabaseServer, supabaseAuth } from './src/lib/supabase-server.ts';
+./grep.txt:23:./server.ts:55:    await supabaseServer.from('audit_logs').insert({
+./grep.txt:24:./server.ts:82:    if (supabaseServer.from) {
+./grep.txt:25:./server.ts:83:      await supabaseServer.from('sync_conflicts').upsert({
+./grep.txt:26:./server.ts:98:      await supabaseServer.from('sync_operations').upsert({
+./grep.txt:27:./server.ts:117:    const { data: inserted, error: insertError } = await supabaseServer.from('idempotency_keys').insert({
+./grep.txt:28:./server.ts:134:        const { data: existing } = await supabaseServer.from('idempotency_keys')
+./grep.txt:29:./server.ts:138:          await supabaseServer.from('idempotency_keys').delete().eq('request_id', requestId);
+./grep.txt:30:./server.ts:167:      await supabaseServer.from('idempotency_keys').update({
+./grep.txt:31:./server.ts:186:      const { data, error } = await supabaseServer.auth.admin.createUser({
+./grep.txt:32:./server.ts:188:        password: DEFAULT_ADMIN_PASSWORD,
+./grep.txt:33:./server.ts:198:      const { data } = await supabaseServer.auth.admin.getUserById(existing.auth_user_id);
+./grep.txt:34:./server.ts:203:    const { data: users, error: listError } = await supabaseServer.auth.admin.listUsers({ page: 1, perPage: 100 });
+./grep.txt:35:./server.ts:211:    const { data, error } = await supabaseServer.auth.admin.createUser({
+./grep.txt:36:./server.ts:213:      password: DEFAULT_ADMIN_PASSWORD,
+./grep.txt:37:./server.ts:220:    throw new Error('Supabase Auth is not ready. Run the updated sql/supabase_schema.sql in Supabase SQL Editor.', { cause: error });
+./grep.txt:38:./server.ts:298:      const password = String(req.body?.password || '');
+./grep.txt:39:./server.ts:304:      const { data, error } = await supabaseAuth.auth.signInWithPassword({
+./grep.txt:40:./server.ts:306:        password,
+./grep.txt:41:./server.ts:312:      await supabaseServer.auth.admin.updateUserById(data.user.id, {
+./grep.txt:42:./server.ts:333:      const { data, error } = await supabaseServer.auth.getUser(token);
+./grep.txt:43:./server.ts:347:      const { data, error } = await supabaseAuth.auth.refreshSession({ refresh_token: refreshToken });
+./grep.txt:44:./server.ts:366:      const { data: authData, error: authError } = await supabaseServer.auth.getUser(token);
+./src/middleware/auth.ts:2:import { supabaseServer } from '../lib/supabase-server.ts';
+./src/middleware/auth.ts:17:    const { data, error } = await supabaseServer.auth.getUser(token);
+./src/middleware/auth.ts:31:      const { data } = await supabaseServer.auth.getUser(token);
+./src/components/LoginScreen.tsx:7:  authenticate: (username: string, password: string) => Promise<{ token: string; access_token?: string; refresh_token?: string; expires_at?: number; user: { name: string; role: string; avatar: string; username: string } }>;
+./src/components/LoginScreen.tsx:12:  const [password, setPassword] = useState('');
+./src/components/LoginScreen.tsx:21:      const result = await authenticate(username.trim(), password);
+./src/components/LoginScreen.tsx:97:              <label htmlFor="login-password" className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wide">
+./src/components/LoginScreen.tsx:105:                  id="login-password"
+./src/components/LoginScreen.tsx:106:                  type={showPassword ? 'text' : 'password'}
+./src/components/LoginScreen.tsx:108:                  autoComplete="new-password"
+./src/components/LoginScreen.tsx:109:                  value={password}
+./src/components/AddPlayerModal.tsx:40:  const [totalSessions, setTotalSessions] = useState<number>(() => { try { return Math.max(1, Number(JSON.parse(localStorage.getItem('ifc_academy_prefs') || '{}').monthlySessions || 8)); } catch { return 8; } });
+./src/components/AddPlayerModal.tsx:78:      setTotalSessions((() => { try { return Math.max(1, Number(JSON.parse(localStorage.getItem('ifc_academy_prefs') || '{}').monthlySessions || 8)); } catch { return 8; } })());
+./src/views/SettingsView.tsx:45:  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
+./src/views/SettingsView.tsx:58:  const [msgTemplate, setMsgTemplate] = useState(() => localStorage.getItem('ifc_whatsapp_template') || 'مرحباً ولي أمر اللاعب {اسم_اللاعب}، نذكركم بأن الاشتراك بقيمة {المبلغ_المستحق} ج.م يحتاج إلى التجديد.');
+./src/views/SettingsView.tsx:74:  useEffect(() => localStorage.setItem('ifc_security_prefs', JSON.stringify(performance)), [performance]);
+./src/views/SettingsView.tsx:75:  useEffect(() => localStorage.setItem('ifc_academy_prefs', JSON.stringify(academyPrefs)), [academyPrefs]);
+./src/views/SettingsView.tsx:122:    localStorage.setItem('ifc_whatsapp_template', msgTemplate);
+./src/views/SettingsView.tsx:123:    localStorage.setItem('ifc_security_prefs', JSON.stringify(performance));
+./src/views/SettingsView.tsx:124:    localStorage.setItem('ifc_academy_prefs', JSON.stringify(academyPrefs));
+./src/views/SettingsView.tsx:287:          <div className="grid grid-cols-1 md:grid-cols-2 gap-4"><Field label="اسم المستخدم الجديد"><input autoComplete="username" value={loginUsername} onChange={e=>setLoginUsername(e.target.value)}/></Field><div/><Field label="كلمة المرور الجديدة"><input type="password" autoComplete="new-password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="6 أحرف/أرقام على الأقل"/></Field><Field label="تأكيد كلمة المرور"><input type="password" autoComplete="new-password" value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)}/></Field></div>
+./src/services/api.ts:49:async function mutateLocal<T>(key: string, updater: (current: T | null) => T): Promise<T> {
+./src/services/api.ts:51:  const next = updater(current);
+./src/services/api.ts:65:  await enqueueMutation({ method, url, body, epoch: Number(localStorage.getItem('ifc_server_data_epoch') || 1) });
+./src/services/api.ts:97:    operationalKeys.forEach((key) => localStorage.removeItem(CACHE_PREFIX + key));
+./src/services/api.ts:98:    localStorage.removeItem('ifc_server_sync_fingerprint');
+./src/services/api.ts:115:  if (data?.epoch !== undefined) { try { localStorage.setItem('ifc_server_data_epoch', String(data.epoch)); } catch {} }
+./src/services/api.ts:129:    let serverEpoch = Number(localStorage.getItem('ifc_server_data_epoch') || 1);
+./src/services/api.ts:132:      if (epochRes.ok) { const epochData = await epochRes.json(); serverEpoch = Number(epochData?.epoch || serverEpoch); localStorage.setItem('ifc_server_data_epoch', String(serverEpoch)); }
+./src/services/api.ts:180:  localStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
+./src/services/api.ts:181:  if (data.refresh_token) localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token);
+./src/services/api.ts:183:    const raw = localStorage.getItem(AUTH_SESSION_KEY);
+./src/services/api.ts:186:    localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({
+./src/services/api.ts:198:  try { refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY) || ''; } catch {}
+./src/services/api.ts:210:        localStorage.removeItem(AUTH_TOKEN_KEY);
+./src/services/api.ts:211:        localStorage.removeItem(REFRESH_TOKEN_KEY);
+./src/services/api.ts:212:        localStorage.removeItem(AUTH_SESSION_KEY);
+./src/services/api.ts:235:    const token = localStorage.getItem(AUTH_TOKEN_KEY);
+./src/services/api.ts:253:    const raw = localStorage.getItem(CACHE_PREFIX + key);
+./src/services/api.ts:259:  try { localStorage.setItem(CACHE_PREFIX + key, JSON.stringify(value)); } catch {}
+./src/services/api.ts:303:export async function loginAdmin(username: string, password: string) {
+./src/services/api.ts:307:    body: JSON.stringify({ username, password }),
+./src/services/api.ts:435:    for (const op of queued) await enqueueMutation({ ...op, epoch: Number(localStorage.getItem('ifc_server_data_epoch') || 1) });
+./src/services/api.ts:585:    await enqueueMutation({ method: 'POST', url: '/api/reset-academy-data', body: {}, epoch: Number(localStorage.getItem('ifc_server_data_epoch') || 1) });
+./src/services/api.ts:599:    await enqueueMutation({ method: 'POST', url: '/api/reset-academy-data', body: {}, epoch: Number(localStorage.getItem('ifc_server_data_epoch') || 1) });
+./src/services/desktopRuntime.ts:1:import { check } from '@tauri-apps/plugin-updater';
+./src/services/desktopRuntime.ts:8:  return typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__);
+./src/services/offlineStore.ts:3: * Tauri/Windows: native SQLite file `ifc_academy.db` via @tauri-apps/plugin-sql.
+./src/services/offlineStore.ts:29:  return typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__);
+./src/services/offlineStore.ts:37:    const db = await mod.default.load('sqlite:ifc_academy.db');
+./src/services/offlineStore.ts:60:    if (typeof indexedDB === 'undefined') {
+./src/services/offlineStore.ts:64:    const request = indexedDB.open(DB_NAME, DB_VERSION);
+./src/lib/supabase-server.ts:1:import { createClient } from '@supabase/supabase-js';
+./src/lib/supabase-server.ts:3:const supabaseUrl = process.env.SUPABASE_URL;
+./src/lib/supabase-server.ts:4:const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
+./src/lib/supabase-server.ts:5:const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || supabaseSecretKey;
+./src/lib/supabase-server.ts:7:if (!supabaseUrl) throw new Error('SUPABASE_URL is required on the server.');
+./src/lib/supabase-server.ts:8:if (!supabaseSecretKey) throw new Error('SUPABASE_SECRET_KEY is required on the server.');
+./src/lib/supabase-server.ts:10:// Server-only client. The secret key must NEVER be exposed to the browser.
+./src/lib/supabase-server.ts:11:export const supabaseServer = createClient(supabaseUrl, supabaseSecretKey, {
+./src/lib/supabase-server.ts:16:export const supabaseAuth = createClient(supabaseUrl, supabasePublishableKey!, {
+./src/generated/runtimeConfig.ts:1:// Generated during the Windows release build. Do not put secrets here.
+./src/App.tsx:213:    const readMinutes = () => { try { return Math.max(5, Math.min(240, Number(JSON.parse(localStorage.getItem('ifc_security_prefs') || '{}').autoLockMinutes || 30))); } catch { return 30; } };
+./src/App.tsx:215:      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+./src/App.tsx:256:            const previousFingerprint = localStorage.getItem('ifc_server_sync_fingerprint') || '';
+./src/App.tsx:282:          try { const fingerprint = await fetchServerSyncFingerprint(); if (fingerprint) localStorage.setItem('ifc_server_sync_fingerprint', fingerprint); } catch {}
+./src/App.tsx:308:      if (!cancelled && (result.remaining || 0) === 0 && localStorage.getItem(AUTH_TOKEN_KEY)) await loadDatabaseData();
+./src/App.tsx:315:      if (!cancelled && (result.remaining || 0) === 0 && localStorage.getItem(AUTH_TOKEN_KEY)) await loadDatabaseData();
+./src/App.tsx:325:      if (!cancelled && remaining === 0 && navigator.onLine && localStorage.getItem(AUTH_TOKEN_KEY)) await loadDatabaseData();
+./src/App.tsx:332:      localStorage.removeItem(AUTH_TOKEN_KEY);
+./src/App.tsx:333:      localStorage.removeItem('ifc_admin_refresh_token');
+./src/App.tsx:334:      localStorage.removeItem(AUTH_SESSION_KEY);
+./src/App.tsx:340:      if (!cancelled && document.visibilityState === 'visible' && localStorage.getItem(AUTH_TOKEN_KEY)) void loadDatabaseData();
+./src/App.tsx:354:        const token = localStorage.getItem(AUTH_TOKEN_KEY);
+./src/App.tsx:355:        const refreshToken = localStorage.getItem('ifc_admin_refresh_token');
+./src/App.tsx:356:        const cachedSession = (() => { try { return JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || 'null'); } catch { return null; } })();
+./src/App.tsx:363:          localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({ authenticated: true, user }));
+./src/App.tsx:371:            localStorage.setItem(AUTH_TOKEN_KEY, refreshed.access_token);
+./src/App.tsx:372:            localStorage.setItem('ifc_admin_refresh_token', refreshed.refresh_token);
+./src/App.tsx:374:            localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({ authenticated: true, user, expiresAt: refreshed.expires_at }));
+./src/App.tsx:387:        localStorage.removeItem(AUTH_TOKEN_KEY); localStorage.removeItem('ifc_admin_refresh_token'); localStorage.removeItem(AUTH_SESSION_KEY);
+./src/App.tsx:390:        const cachedSession = (() => { try { return JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || 'null'); } catch { return null; } })();
+./src/App.tsx:431:      const previousDay = localStorage.getItem(key);
+./src/App.tsx:439:        localStorage.setItem(key, todayKey);
+./src/App.tsx:440:        localStorage.setItem('ifc_notifications_daily_reset_pending_v2', '1');
+./src/App.tsx:547:    try { return JSON.parse(localStorage.getItem('ifc_academy_prefs') || '{}'); } catch { return {}; }
+./src/App.tsx:581:      const dailyResetPending = localStorage.getItem('ifc_notifications_daily_reset_pending_v2') === '1';
+./src/App.tsx:585:      if (dailyResetPending) localStorage.removeItem('ifc_notifications_daily_reset_pending_v2');
+./src/App.tsx:1076:      try { localStorage.setItem('ifc_cache_v4:settings', JSON.stringify(updated)); } catch {}
+./src/App.tsx:1088:      ['players','payments','expenses','coaches','archives'].forEach((key) => localStorage.removeItem(`ifc_cache_v4:${key}`));
+./src/App.tsx:1445:    const lastActiveMonth = localStorage.getItem('ifc_last_active_month');
+./src/App.tsx:1448:      localStorage.setItem('ifc_last_active_month', currentYm);
+./src/App.tsx:1451:      localStorage.setItem('ifc_last_active_month', currentYm);
+./src/App.tsx:1555:      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+./src/App.tsx:1557:      localStorage.removeItem(AUTH_TOKEN_KEY);
+./src/App.tsx:1558:      localStorage.removeItem('ifc_admin_refresh_token');
+./src/App.tsx:1564:      localStorage.removeItem(AUTH_SESSION_KEY);
+./src/App.tsx:1642:                const token = localStorage.getItem(AUTH_TOKEN_KEY);
+./src/App.tsx:1643:                const refreshToken = localStorage.getItem('ifc_admin_refresh_token');
+./src/App.tsx:1644:                const cachedSession = (() => { try { return JSON.parse(localStorage.getItem(AUTH_SESSION_KEY) || 'null'); } catch { return null; } })();
+./src/App.tsx:1650:                    localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({ authenticated: true, user }));
+./src/App.tsx:1658:                      localStorage.setItem(AUTH_TOKEN_KEY, refreshed.access_token);
+./src/App.tsx:1659:                      localStorage.setItem('ifc_admin_refresh_token', refreshed.refresh_token);
+./src/App.tsx:1662:                      localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({ authenticated: true, user, expiresAt: refreshed.expires_at }));
+./src/App.tsx:1674:                  localStorage.removeItem(AUTH_TOKEN_KEY);
+./src/App.tsx:1675:                  localStorage.removeItem('ifc_admin_refresh_token');
+./src/App.tsx:1676:                  localStorage.removeItem(AUTH_SESSION_KEY);
+./src/App.tsx:1689:                  localStorage.setItem(AUTH_TOKEN_KEY, token);
+./src/App.tsx:1690:                  if (refreshToken) localStorage.setItem('ifc_admin_refresh_token', refreshToken);
+./src/App.tsx:1691:                  localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({ authenticated: true, user, expiresAt }));
+./src/db/queries.ts:1:import { supabaseServer } from '../lib/supabase-server.ts';
+./src/db/queries.ts:27:  const { data, error } = await supabaseServer.from(table).select('*').eq('id', id).maybeSingle();
+./src/db/queries.ts:42:  const { error } = await supabaseServer.from('admin_credentials').upsert({
+./src/db/queries.ts:53:  const { error } = await supabaseServer.from('admin_credentials').update({
+./src/db/queries.ts:109:    supabaseServer.from('players').select('*').is('deleted_at', null).order('member_number', { ascending: true }),
+./src/db/queries.ts:110:    supabaseServer.from('player_sessions').select('*').order('session_number', { ascending: true }),
+./src/db/queries.ts:124:  const { data, error } = await supabaseServer.from('players').select('member_number');
+./src/db/queries.ts:145:    const { data: existingByMember, error: memberLookupError } = await supabaseServer
+./src/db/queries.ts:180:      ? await supabaseServer.from('players').upsert(payload(), { onConflict: 'id' }).select('*').single()
+./src/db/queries.ts:181:      : await supabaseServer.from('players').insert(payload()).select('*').single();
+./src/db/queries.ts:204:      const { error: de } = await supabaseServer.from('player_sessions').delete().eq('player_id', data.id);
+./src/db/queries.ts:207:    const { error: se } = await supabaseServer.from('player_sessions').upsert(
+./src/db/queries.ts:214:      if (!isExistingId) await supabaseServer.from('players').delete().eq('id', data.id);
+./src/db/queries.ts:240:    const { data, error } = await supabaseServer.from('player_sessions').select('*').eq('player_id', id);
+./src/db/queries.ts:246:    let query = supabaseServer.from('players').update(payload).eq('id', id);
+./src/db/queries.ts:251:      const { data: serverRow } = await supabaseServer.from('players').select('*').eq('id', id).maybeSingle();
+./src/db/queries.ts:263:    const { error: de } = await supabaseServer.from('player_sessions').delete().eq('player_id', id);
+./src/db/queries.ts:266:      const { error: ie } = await supabaseServer.from('player_sessions').insert(updates.sessions.map((s) => ({
+./src/db/queries.ts:271:        await supabaseServer.from('player_sessions').delete().eq('player_id', id);
+./src/db/queries.ts:272:        if (oldSessions?.length) await supabaseServer.from('player_sessions').insert(oldSessions);
+./src/db/queries.ts:280:  let query = supabaseServer.from('players').update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id);
+./src/db/queries.ts:285:    const { data: serverRow } = await supabaseServer.from('players').select('*').eq('id', id).maybeSingle();
+./src/db/queries.ts:292:  const { data: existing, error: readError } = await supabaseServer
+./src/db/queries.ts:298:    const { data: lastSession, error: lastError } = await supabaseServer.from('player_sessions')
+./src/db/queries.ts:306:  const { error } = await supabaseServer.from('player_sessions').upsert({
+./src/db/queries.ts:322:      const { data, error } = await supabaseServer.from('players').select('id,member_number').in('member_number', batch);
+./src/db/queries.ts:330:    const { data, error } = await supabaseServer.from('players').select('member_number');
+./src/db/queries.ts:376:    const { error } = await supabaseServer.from('players').upsert(chunk, { onConflict: 'member_number' });
+./src/db/queries.ts:381:        const retry = await supabaseServer.from('players').upsert(fallback, { onConflict: 'member_number' });
+./src/db/queries.ts:405:      const { error } = await supabaseServer.from('payments').upsert(payments.slice(i, i + 100), { onConflict: 'id' });
+./src/db/queries.ts:423:    const { error } = await supabaseServer.from('coaches').upsert(rows.slice(i, i + 100), { onConflict: 'id' });
+./src/db/queries.ts:431:  const { data, error } = await supabaseServer.from('payments').select('*').is('deleted_at', null).order('created_at', { ascending: false });
+./src/db/queries.ts:447:    const { error } = await supabaseServer.from('payments').upsert(payload(), { onConflict: 'id' });
+./src/db/queries.ts:458:export async function deletePayment(id: string): Promise<void> { const { error } = await supabaseServer.from('payments').update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id); if (error) fail('trash payment', error); }
+./src/db/queries.ts:462:  const { data, error } = await supabaseServer.from('expenses').select('*').is('deleted_at', null).order('created_at', { ascending: false });
+./src/db/queries.ts:470:    const { error } = await supabaseServer.from('expenses').upsert(row(), { onConflict: 'id' });
+./src/db/queries.ts:477:export async function deleteExpense(id: string): Promise<void> { const { error } = await supabaseServer.from('expenses').update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id); if (error) fail('trash expense', error); }
+./src/db/queries.ts:481:  const { data, error } = await supabaseServer.from('coaches').select('*').is('deleted_at', null).order('name', { ascending: true });
+./src/db/queries.ts:489:    const { error } = await supabaseServer.from('coaches').upsert(row(), { onConflict: 'id' });
+./src/db/queries.ts:500:  let query = supabaseServer.from('coaches').update(p).eq('id', id);
+./src/db/queries.ts:505:    const { data: serverRow } = await supabaseServer.from('coaches').select('*').eq('id', id).maybeSingle();
+./src/db/queries.ts:510:export async function deleteCoach(id: string, baseVersion?: number | null): Promise<void> { let query = supabaseServer.from('coaches').update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id); if (baseVersion !== null && baseVersion !== undefined && Number.isFinite(Number(baseVersion))) query = query.eq('version', Number(baseVersion)); const { data, error } = await query.select('id,version,deleted_at').maybeSingle(); if (error) fail('trash coach', error); if (!data && baseVersion !== null && baseVersion !== undefined) { const { data: serverRow } = await supabaseServer.from('coaches').select('*').eq('id', id).maybeSingle(); throw new SyncConflictError('تم تغيير المدرب من جهاز آخر قبل الحذف.', 'coach', id, serverRow); } }
+./src/db/queries.ts:514:  const { data, error } = await supabaseServer.rpc('academy_data_epoch');
+./src/db/queries.ts:520:  const { data, error } = await supabaseServer.rpc('academy_sync_fingerprint');
+./src/db/queries.ts:526:  const { data, error } = await supabaseServer.rpc('reset_academy_data');
+./src/db/queries.ts:534:    const { count, error: countError } = await supabaseServer.from(table).select('*', { count: 'exact', head: true });
+./src/db/queries.ts:541:    const { error: deleteError } = await supabaseServer.from(table).delete().not('id', 'is', null);
+./src/db/queries.ts:544:  const { data: settings } = await supabaseServer.from('academy_settings').select('data_epoch').eq('id', 1).maybeSingle();
+./src/db/queries.ts:546:  await supabaseServer.from('academy_settings').upsert({ id: 1, data_epoch: nextEpoch, updated_at: new Date().toISOString() });
+./src/db/queries.ts:558:  const { error } = await supabaseServer.from('academy_settings').insert({ id: 1, academy_name: defaultSettings.academyName, logo_text: defaultSettings.logoText, phone: defaultSettings.phone, email: defaultSettings.email, address: defaultSettings.address, currency: defaultSettings.currency, current_season: defaultSettings.currentSeason, whatsapp_notifications_enabled: true, sms_alerts_enabled: false, custom_logo_url: '', color_theme: 'classic-blue', primary_color: '#2563eb', background_color: '#020617', navbar_color: '#0b1120', desktop_notifications_enabled: true });
+./src/db/queries.ts:562:  const { error } = await supabaseServer.from('academy_settings').upsert({ id: 1, academy_name: s.academyName, logo_text: s.logoText, phone: s.phone, email: s.email, address: s.address, currency: s.currency, current_season: s.currentSeason, whatsapp_notifications_enabled: s.whatsappNotificationsEnabled, sms_alerts_enabled: s.smsAlertsEnabled, custom_logo_url: s.customLogoUrl || '', color_theme: s.colorTheme || 'classic-blue', primary_color: s.primaryColor || '#2563eb', background_color: s.backgroundColor || '#020617', navbar_color: s.navbarColor || '#0b1120', desktop_notifications_enabled: s.desktopNotificationsEnabled ?? true, updated_at: new Date().toISOString() });
+./src/db/queries.ts:568:  const { data, error } = await supabaseServer.from('monthly_archives').select('*').is('deleted_at', null).order('month_key', { ascending: false });
+./src/db/queries.ts:591:  const { error } = await supabaseServer.from('monthly_archives').upsert({
+./src/db/queries.ts:617:    supabaseServer.from('payments').select('*').like('date', `${monthKey}%`).order('created_at', { ascending: false }),
+./src/db/queries.ts:618:    supabaseServer.from('expenses').select('*').like('date', `${monthKey}%`).order('created_at', { ascending: false }),
+./src/db/queries.ts:619:    supabaseServer.from('players').select('id,status'),
+./src/db/queries.ts:620:    supabaseServer.from('coaches').select('id,status'),
+./src/db/queries.ts:649:  const { error } = await supabaseServer.from('monthly_archives').upsert({
+./src/db/queries.ts:661:export async function deleteMonthlyArchive(id: string): Promise<void> { const { error } = await supabaseServer.from('monthly_archives').update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id); if (error) fail('delete monthly archive', error); }
+./src/utils/auditLogger.ts:92:    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+./src/utils/auditLogger.ts:116:    const stored = localStorage.getItem(STORAGE_KEY);

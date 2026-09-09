@@ -1,0 +1,621 @@
+import { Player, PaymentRecord, ExpenseRecord, Coach, AcademySettings, MonthlyArchiveRecord } from '../types.ts';
+import { IFC_API_BASE_URL } from '../generated/runtimeConfig.ts';
+import { getLocalSnapshot, setLocalSnapshot, removeLocalSnapshot, clearLocalSnapshots, enqueueMutation, getQueuedMutations, removeQueuedMutation, saveSyncConflict, getQueuedMutationCount, markQueuedMutation } from './offlineStore.ts';
+
+const AUTH_TOKEN_KEY = 'ifc_admin_session_token';
+const REFRESH_TOKEN_KEY = 'ifc_admin_refresh_token';
+const AUTH_SESSION_KEY = 'ifc_auth_session_v2';
+const CACHE_PREFIX = 'ifc_cache_v4:';
+const API_BASE_URL = String(IFC_API_BASE_URL || '').replace(/\/$/, '');
+
+function apiUrl(input: RequestInfo | URL): RequestInfo | URL {
+  if (typeof input === 'string' && input.startsWith('/api/')) return `${API_BASE_URL}${input}`;
+  if (input instanceof URL && input.pathname.startsWith('/api/')) return new URL(`${API_BASE_URL}${input.pathname}${input.search}`);
+  return input;
+}
+
+class AuthExpiredError extends Error {
+  constructor(message = 'انتهت جلسة الدخول. يرجى تسجيل الدخول مرة أخرى.') {
+    super(message);
+    this.name = 'AuthExpiredError';
+  }
+}
+
+let refreshInFlight: Promise<string> | null = null;
+
+const LOCAL_KEYS = ['players', 'payments', 'expenses', 'coaches', 'settings', 'archives'];
+let syncInFlight: Promise<{ synced: number; remaining: number; blocked?: boolean }> | null = null;
+
+function isOfflineNow() {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+function isNetworkFailure(error: any) {
+  if (error instanceof TypeError) return true;
+  const status = Number(error?.status || 0);
+  return status === 502 || status === 503 || status === 504 || status === 0;
+}
+
+function dispatchSyncEvent(name: string, detail: any = {}) {
+  try { window.dispatchEvent(new CustomEvent(name, { detail })); } catch {}
+}
+
+function localId(prefix: string) {
+  return `local-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function nextLocalMemberNumber() { return nextLocalMemberNumberFrom(await (getLocalSnapshot<Player[]>('players') || Promise.resolve([]))); }
+
+async function mutateLocal<T>(key: string, updater: (current: T | null) => T): Promise<T> {
+  const current = await getLocalSnapshot<T>(key);
+  const next = updater(current);
+  await setLocalSnapshot(key, next);
+  return next;
+}
+
+async function getLocalRecordVersion(key: 'players' | 'coaches', id: string): Promise<number | null> {
+  const rows = await getLocalSnapshot<any[]>(key);
+  const row = (rows || []).find((item) => String(item?.id) === String(id));
+  const version = Number(row?.version);
+  return Number.isFinite(version) && version > 0 ? version : null;
+}
+
+async function queueOfflineMutation(method: string, url: string, body: any, localApply: () => Promise<void>) {
+  await localApply();
+  await enqueueMutation({ method, url, body, epoch: Number(localStorage.getItem('ifc_server_data_epoch') || 1) });
+  dispatchSyncEvent('ifc-sync-queued');
+}
+
+async function withOfflineMutation<T>(opts: {
+  method: string;
+  url: string;
+  body?: any;
+  online: () => Promise<T>;
+  localResult: T;
+  localApply: () => Promise<void>;
+}): Promise<T> {
+  if (isOfflineNow()) {
+    await queueOfflineMutation(opts.method, opts.url, opts.body, opts.localApply);
+    return opts.localResult;
+  }
+  try {
+    const result = await opts.online();
+    await opts.localApply();
+    return result;
+  } catch (error) {
+    if (!isNetworkFailure(error)) throw error;
+    await queueOfflineMutation(opts.method, opts.url, opts.body, opts.localApply);
+    return opts.localResult;
+  }
+}
+
+async function clearAllLocalData() {
+  // Global reset clears operational data only. Academy identity/settings must survive.
+  const operationalKeys = LOCAL_KEYS.filter((key) => key !== 'settings');
+  await clearLocalSnapshots(operationalKeys);
+  try {
+    operationalKeys.forEach((key) => localStorage.removeItem(CACHE_PREFIX + key));
+    localStorage.removeItem('ifc_server_sync_fingerprint');
+  } catch {}
+}
+
+export async function getLocalDatabaseData() {
+  const [players, payments, expenses, coaches, settings, archives] = await Promise.all([
+    getLocalSnapshot<Player[]>('players'), getLocalSnapshot<PaymentRecord[]>('payments'),
+    getLocalSnapshot<ExpenseRecord[]>('expenses'), getLocalSnapshot<Coach[]>('coaches'),
+    getLocalSnapshot<AcademySettings>('settings'), getLocalSnapshot<MonthlyArchiveRecord[]>('archives'),
+  ]);
+  return { players, payments, expenses, coaches, settings, archives };
+}
+
+export async function fetchServerSyncFingerprint(): Promise<string> {
+  const res = await authorizedFetch('/api/sync-fingerprint');
+  if (!res.ok) throw await readApiError(res, 'تعذر فحص تغييرات قاعدة البيانات');
+  const data = await res.json();
+  if (data?.epoch !== undefined) { try { localStorage.setItem('ifc_server_data_epoch', String(data.epoch)); } catch {} }
+  return String(data?.fingerprint || '');
+}
+
+export async function getOfflineSyncStatus() {
+  return { pending: await getQueuedMutationCount(), online: !isOfflineNow() };
+}
+
+export async function syncOfflineChanges() {
+  if (syncInFlight) return syncInFlight;
+  if (isOfflineNow()) return { synced: 0, remaining: await getQueuedMutationCount(), blocked: false };
+  syncInFlight = (async () => {
+    let synced = 0;
+    const queue = await getQueuedMutations();
+    let serverEpoch = Number(localStorage.getItem('ifc_server_data_epoch') || 1);
+    try {
+      const epochRes = await authorizedFetch('/api/sync-fingerprint');
+      if (epochRes.ok) { const epochData = await epochRes.json(); serverEpoch = Number(epochData?.epoch || serverEpoch); localStorage.setItem('ifc_server_data_epoch', String(serverEpoch)); }
+    } catch (epochError) {
+      if (isNetworkFailure(epochError)) return { synced: 0, remaining: queue.length, blocked: false };
+    }
+    for (const mutation of queue) {
+      // A changed epoch means the academy was globally reset elsewhere. Older offline
+      // edits must never resurrect after that reset. The reset operation itself is exempt.
+      if (!mutation.url.includes('/api/reset-academy-data') && mutation.epoch !== undefined && Number(mutation.epoch) < serverEpoch) {
+        await removeQueuedMutation(mutation.id);
+        await saveSyncConflict(mutation, new Error('تم تجاهل العملية المحلية لأنها أقدم من آخر تصفير عالمي للبيانات.'));
+        continue;
+      }
+      if (isOfflineNow()) break;
+      try {
+        await markQueuedMutation(mutation.id, 'syncing');
+        const headers = new Headers({
+          'Content-Type': 'application/json',
+          'X-IFC-Offline-Mutation': mutation.id,
+          'X-IFC-Request-ID': mutation.id,
+          'X-IFC-Device-ID': getDeviceId(),
+        });
+        const res = await authorizedFetch(mutation.url, {
+          method: mutation.method,
+          headers,
+          body: mutation.body === undefined ? undefined : JSON.stringify(mutation.body),
+        });
+        if (!res.ok) throw await readApiError(res, 'فشلت مزامنة العملية');
+        await removeQueuedMutation(mutation.id);
+        synced++;
+      } catch (error) {
+        if (isNetworkFailure(error)) break;
+        await markQueuedMutation(mutation.id, 'failed', String((error as any)?.message || error || 'فشلت المزامنة'));
+        await saveSyncConflict(mutation, error);
+        // Keep the failed item at the head of the queue. It must not be silently discarded
+        // or replaced by a stale server snapshot.
+        dispatchSyncEvent('ifc-sync-conflict', { mutation, error });
+        break;
+      }
+    }
+    const remaining = await getQueuedMutationCount();
+    dispatchSyncEvent('ifc-sync-complete', { synced, remaining });
+    return { synced, remaining, blocked: remaining > 0 };
+  })().finally(() => { syncInFlight = null; });
+  return syncInFlight;
+}
+
+
+function persistRefreshedSession(data: { access_token: string; refresh_token?: string; expires_at?: number; user?: any }) {
+  localStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
+  if (data.refresh_token) localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token);
+  try {
+    const raw = localStorage.getItem(AUTH_SESSION_KEY);
+    const current = raw ? JSON.parse(raw) : {};
+    const user = data.user || current?.user;
+    localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify({
+      ...current,
+      authenticated: true,
+      user,
+      expiresAt: data.expires_at,
+    }));
+  } catch {}
+}
+
+async function refreshSessionForApi(): Promise<string> {
+  if (refreshInFlight) return refreshInFlight;
+  let refreshToken = '';
+  try { refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY) || ''; } catch {}
+  if (!refreshToken) throw new AuthExpiredError();
+
+  refreshInFlight = (async () => {
+    const res = await fetch(apiUrl('/api/auth/refresh'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.access_token) {
+      try {
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        localStorage.removeItem(REFRESH_TOKEN_KEY);
+        localStorage.removeItem(AUTH_SESSION_KEY);
+      } catch {}
+      try { window.dispatchEvent(new Event('ifc-auth-expired')); } catch {}
+      throw new AuthExpiredError(data?.error || 'انتهت جلسة الدخول. يرجى تسجيل الدخول مرة أخرى.');
+    }
+    persistRefreshedSession(data);
+    return data.access_token as string;
+  })().finally(() => { refreshInFlight = null; });
+
+  return refreshInFlight;
+}
+
+function makeRequestId() {
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+async function authorizedFetch(input: RequestInfo | URL, init: RequestInit = {}, retry = true): Promise<Response> {
+  const headers = new Headers(init.headers || {});
+  const method = String(init.method || 'GET').toUpperCase();
+  if (['POST','PUT','PATCH','DELETE'].includes(method) && !headers.has('X-IFC-Request-ID')) {
+    headers.set('X-IFC-Request-ID', makeRequestId());
+  }
+  try {
+    const token = localStorage.getItem(AUTH_TOKEN_KEY);
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+  } catch {}
+
+  const res = await fetch(apiUrl(input), { ...init, headers });
+  if (res.status !== 401 || !retry) {
+    if (res.status === 401) throw new AuthExpiredError();
+    return res;
+  }
+
+  const newToken = await refreshSessionForApi();
+  const retryHeaders = new Headers(init.headers || {});
+  retryHeaders.set('Authorization', `Bearer ${newToken}`);
+  return authorizedFetch(input, { ...init, headers: retryHeaders }, false);
+}
+
+function readCache<T>(key: string): T | null {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + key);
+    return raw ? JSON.parse(raw) as T : null;
+  } catch { return null; }
+}
+
+function writeCache<T>(key: string, value: T) {
+  try { localStorage.setItem(CACHE_PREFIX + key, JSON.stringify(value)); } catch {}
+}
+}
+
+class ApiHttpError extends Error { status: number; constructor(message: string, status: number) { super(message); this.name = 'ApiHttpError'; this.status = status; } }
+
+async function readApiError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const body = await res.json();
+    const message = body?.error || body?.message || fallback;
+    return new ApiHttpError(`${message} (HTTP ${res.status})`, res.status);
+  } catch {
+    return new ApiHttpError(`${fallback} (HTTP ${res.status})`, res.status);
+  }
+}
+
+async function assertApiOk(res: Response, fallback: string): Promise<void> {
+  if (!res.ok) throw await readApiError(res, fallback);
+}
+
+async function fetchCachedJson<T>(url: string, cacheKey: string): Promise<T> {
+  if (isOfflineNow()) {
+    const local = await getLocalSnapshot<T>(cacheKey);
+    if (local !== null) return local;
+    const cached = readCache<T>(cacheKey);
+    if (cached !== null) return cached;
+    throw new Error(`لا توجد نسخة محلية متاحة لـ ${cacheKey}. اتصل بالإنترنت مرة واحدة لمزامنة البيانات.`);
+  }
+  try {
+    const res = await authorizedFetch(url);
+    if (!res.ok) throw await readApiError(res, `تعذر تحميل ${cacheKey}`);
+    const data = await res.json() as T;
+    await setLocalSnapshot(cacheKey, data);
+    writeCache(cacheKey, data);
+    return data;
+  } catch (error) {
+    if (error instanceof AuthExpiredError) throw error;
+    const local = await getLocalSnapshot<T>(cacheKey);
+    if (local !== null) return local;
+    const cached = readCache<T>(cacheKey);
+    if (cached !== null) return cached;
+    throw error;
+  }
+}
+
+export async function loginAdmin(username: string, password: string) {
+  const res = await fetch(apiUrl('/api/auth/login'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'بيانات الدخول غير صحيحة');
+  return data as { token: string; access_token: string; refresh_token: string; expires_at?: number; user: { name: string; role: string; avatar: string; username: string; id?: string } };
+}
+
+export async function validateAdminSession(token: string) {
+  try {
+    const res = await fetch(apiUrl('/api/auth/session'), { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return { authenticated: false, networkError: false };
+    return await res.json();
+  } catch {
+    return { authenticated: true, offline: true };
+  }
+}
+
+export async function refreshAdminSession(refreshToken: string) {
+  const res = await fetch(apiUrl('/api/auth/refresh'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'تعذر تجديد الجلسة');
+  return data as { access_token: string; refresh_token: string; expires_at?: number; user: any };
+}
+
+export async function logoutAdmin(token: string) {
+  await fetch('/api/auth/logout', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  }).catch(() => undefined);
+}
+
+export async function updateAdminCredentials(username: string, newPassword: string) {
+  const res = await authorizedFetch('/api/auth/credentials', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, newPassword }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'تعذر تحديث بيانات الدخول');
+  return data;
+}
+
+// ----------------- DB STATUS -----------------
+export async function checkDatabaseStatus(): Promise<{ connected: boolean; type?: string; academyName?: string }> {
+  try {
+    const res = await authorizedFetch('/api/db-status');
+    if (!res.ok) throw new Error('DB status check failed');
+    return await res.json();
+  } catch (error) {
+    console.error('Error checking database status:', error);
+    return { connected: false };
+  }
+}
+
+async function refreshLocalCurrentMonthArchive(archivedBy = 'المدير العام (Admin)'): Promise<MonthlyArchiveRecord> {
+  const now = new Date();
+  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const monthLabel = now.toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' });
+  const [players, coaches, payments, expenses] = await Promise.all([
+    getLocalSnapshot<Player[]>('players'), getLocalSnapshot<Coach[]>('coaches'),
+    getLocalSnapshot<PaymentRecord[]>('payments'), getLocalSnapshot<ExpenseRecord[]>('expenses'),
+  ]);
+  const monthPayments = (payments || []).filter((p) => p.date?.startsWith(monthKey));
+  const monthExpenses = (expenses || []).filter((e) => e.date?.startsWith(monthKey));
+  const totalIncome = monthPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const totalExpenses = monthExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+  const archive: MonthlyArchiveRecord = {
+    id: `arch-live-${monthKey}`, monthKey, monthLabel, archivedAt: now.toISOString(), archivedBy,
+    totalIncome, totalExpenses, netProfit: totalIncome - totalExpenses,
+    paymentsCount: monthPayments.length, expensesCount: monthExpenses.length,
+    activePlayersCount: (players || []).filter((p) => p.status === 'نشط').length,
+    overduePlayersCount: (players || []).filter((p) => p.status === 'متأخر').length,
+    playersCount: (players || []).length, coachesCount: (coaches || []).length,
+    payments: monthPayments, expenses: monthExpenses,
+    notes: 'سجل حي للشهر الحالي يتم تحديثه تلقائيًا.',
+  };
+  await setLocalSnapshot('archives', [archive, ...((await getLocalSnapshot<MonthlyArchiveRecord[]>('archives')) || []).filter((a) => a.monthKey !== monthKey)]);
+  return archive;
+}
+
+async function refreshCurrentMonthArchiveApi(archivedBy = 'المدير العام (Admin)') {
+  if (isOfflineNow()) return refreshLocalCurrentMonthArchive(archivedBy);
+  try {
+    const res = await authorizedFetch('/api/archives/current/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archivedBy }) });
+    if (!res.ok) throw await readApiError(res, 'تعذر تحديث أرشيف الشهر الحالي');
+    const archive = await res.json() as MonthlyArchiveRecord;
+    await mutateLocal<MonthlyArchiveRecord[]>('archives', (current) => [archive, ...(current || []).filter((a) => a.monthKey !== archive.monthKey)]);
+    return archive;
+  } catch (error) {
+    if (isNetworkFailure(error)) return refreshLocalCurrentMonthArchive(archivedBy);
+    throw error;
+  }
+}
+
+// ----------------- PLAYERS -----------------
+export async function fetchPlayers(): Promise<Player[]> { return fetchCachedJson<Player[]>('/api/players', 'players'); }
+
+export async function bulkImportPlayersApi(players: Player[], collectedBy = 'مسؤول الخزينة'): Promise<{ saved: number; updated: number; payments: number }> {
+  if (isOfflineNow()) {
+    let current = await getLocalSnapshot<Player[]>('players') || [];
+    let currentPayments = await getLocalSnapshot<PaymentRecord[]>('payments') || [];
+    let saved = 0, payments = 0;
+    const queued: Array<{ method: string; url: string; body: any }> = [];
+    for (const raw of players) {
+      const memberNumber = raw.memberNumber ? String(raw.memberNumber) : await nextLocalMemberNumberFrom(current);
+      const existingLocal = current.find((p) => String(p.memberNumber) === memberNumber);
+      const prepared: Player = { ...raw, id: raw.id || existingLocal?.id || localId('player'), memberNumber };
+      current = [prepared, ...current.filter((p) => p.id !== prepared.id && String(p.memberNumber) !== memberNumber)];
+      queued.push({ method: 'POST', url: '/api/players', body: prepared });
+      if (!existingLocal) saved++;
+      if (!existingLocal && prepared.monthlyFee > 0) {
+        const payment: PaymentRecord = {
+          id: `pay-auto-import-${prepared.id}-${prepared.subscriptionStartDate || new Date().toISOString().slice(0,10)}`.replace(/[^A-Za-z0-9_-]/g, '-'),
+          invoiceNumber: `IMP-${prepared.id}-${String(prepared.subscriptionStartDate || new Date().toISOString().slice(0,10)).replace(/-/g,'')}`,
+          type: 'اشتراك لاعب', playerId: prepared.id, playerName: prepared.name, memberNumber: prepared.memberNumber,
+          team: prepared.team, amount: prepared.monthlyFee, method: prepared.paymentMethod || 'كاش', date: prepared.subscriptionStartDate || new Date().toISOString().slice(0,10),
+          createdAt: new Date().toISOString(), periodMonth: `اشتراك ${prepared.subscriptionStartDate || new Date().toISOString().slice(0,7)}`,
+          status: 'مدفوع', notes: 'سداد اشتراك إضافة لاعب من Excel تلقائي', collectedBy,
+        };
+        currentPayments = [payment, ...currentPayments.filter((p) => p.id !== payment.id)];
+        queued.push({ method: 'POST', url: '/api/payments', body: payment }); payments++;
+      }
+    }
+    await setLocalSnapshot('players', current); await setLocalSnapshot('payments', currentPayments);
+    await refreshLocalCurrentMonthArchive(collectedBy);
+    for (const op of queued) await enqueueMutation({ ...op, epoch: Number(localStorage.getItem('ifc_server_data_epoch') || 1) });
+    dispatchSyncEvent('ifc-sync-queued');
+    return { saved, updated: 0, payments };
+  }
+  const res = await authorizedFetch('/api/players/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ players, collectedBy, registerSubscriptions: true }) });
+  await assertApiOk(res, 'تعذر استيراد اللاعبين بالجملة');
+  return res.json();
+}
+
+async function nextLocalMemberNumberFrom(players: Player[]) {
+  let max = 0;
+  for (const p of players) { const m = String(p.memberNumber || '').match(/(?:IFC-)?(\d+)$/i); if (m) max = Math.max(max, Number(m[1]) || 0); }
+  return `IFC-${String(max + 1).padStart(3, '0')}`;
+}
+
+export async function createPlayerApi(player: Player): Promise<Player> {
+  const prepared: Player = { ...player, id: player.id || localId('player'), memberNumber: player.memberNumber ? String(player.memberNumber) : await nextLocalMemberNumber() };
+  const localApply = async () => {
+    await mutateLocal<Player[]>('players', (current) => {
+      const list = current || [];
+      return [prepared, ...list.filter((p) => p.id !== prepared.id && String(p.memberNumber) !== String(prepared.memberNumber))];
+    });
+  };
+  const result = await withOfflineMutation({
+    method: 'POST', url: '/api/players', body: prepared, online: async () => {
+      const res = await authorizedFetch('/api/players', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prepared) });
+      await assertApiOk(res, 'تعذر إضافة اللاعب'); return res.json();
+    }, localResult: prepared, localApply,
+  });
+  try { await refreshCurrentMonthArchiveApi(); } catch (e) { console.warn('Archive refresh after player save skipped:', e); }
+  if (result && result.id) await mutateLocal<Player[]>('players', (current) => [result, ...(current || []).filter((p) => p.id !== result.id && p.id !== prepared.id)]);
+  return result;
+}
+
+export async function updatePlayerApi(id: string, updates: Partial<Player>): Promise<void> {
+  const baseVersion = await getLocalRecordVersion('players', id);
+  const mutationBody: any = { ...updates, _ifc_base_version: baseVersion };
+  const localApply = async () => { await mutateLocal<Player[]>('players', (current) => (current || []).map((p) => p.id === id ? ({ ...p, ...updates } as Player) : p)); };
+  await withOfflineMutation({
+    method: 'PUT', url: `/api/players/${id}`, body: mutationBody, online: async () => {
+      const res = await authorizedFetch(`/api/players/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mutationBody) }); await assertApiOk(res, 'تعذر تعديل بيانات اللاعب');
+      const result = await res.json().catch(() => null);
+      if (result?.player) await mutateLocal<Player[]>('players', (current) => (current || []).map((p) => p.id === id ? result.player : p));
+    }, localResult: undefined, localApply,
+  });
+}
+
+export async function deletePlayerApi(id: string): Promise<void> {
+  const baseVersion = await getLocalRecordVersion('players', id);
+  const body = { _ifc_base_version: baseVersion };
+  const localApply = async () => { await mutateLocal<Player[]>('players', (current) => (current || []).filter((p) => p.id !== id)); };
+  await withOfflineMutation({ method: 'DELETE', url: `/api/players/${id}`, body, online: async () => {
+    const res = await authorizedFetch(`/api/players/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await assertApiOk(res, 'تعذر حذف اللاعب');
+  }, localResult: undefined, localApply });
+}
+
+export async function updateSessionAttendanceApi(playerId: string, sessionId: string, status: 'حاضر' | 'غائب' | 'بعذر', notes?: string, date?: string): Promise<void> {
+  const sessionDate = date || new Date().toISOString().split('T')[0];
+  const localApply = async () => {
+    await mutateLocal<Player[]>('players', (current) => (current || []).map((p) => {
+      if (p.id !== playerId) return p;
+      const existing = p.sessions.find((s) => s.id === sessionId);
+      const sessions = existing
+        ? p.sessions.map((s) => s.id === sessionId ? { ...s, status, notes: notes ?? s.notes } : s)
+        : [...p.sessions, { id: sessionId, sessionNumber: p.sessions.length + 1, date: sessionDate, dayName: new Date(`${sessionDate}T00:00:00`).toLocaleDateString('ar-EG', { weekday: 'long' }), time: '5:00 م - 6:30 م', status, notes: notes || '' }];
+      const attended = sessions.filter((s) => s.status === 'حاضر').length;
+      const absent = sessions.filter((s) => s.status === 'غائب').length;
+      return { ...p, sessions, attendedSessions: attended, absentSessions: absent, totalSessions: Math.max(p.totalSessions || 0, sessions.length), attendanceRate: sessions.length ? Math.round((attended / sessions.length) * 100) : 0 };
+    }));
+  };
+  await withOfflineMutation({ method: 'PUT', url: `/api/players/${playerId}/sessions/${sessionId}`, body: { status, notes, date: sessionDate }, online: async () => {
+    const res = await authorizedFetch(`/api/players/${playerId}/sessions/${sessionId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status, notes, date: sessionDate }) }); if (!res.ok) throw await readApiError(res, 'تعذر تحديث الحضور');
+  }, localResult: undefined, localApply });
+}
+
+// ----------------- PAYMENTS -----------------
+export async function fetchPayments(): Promise<PaymentRecord[]> { return fetchCachedJson<PaymentRecord[]>('/api/payments', 'payments'); }
+
+export async function createPaymentApi(payment: PaymentRecord): Promise<PaymentRecord> {
+  const prepared: PaymentRecord = { ...payment, id: payment.id || localId('payment'), createdAt: payment.createdAt || new Date().toISOString() };
+  const localApply = async () => { await mutateLocal<PaymentRecord[]>('payments', (current) => [prepared, ...(current || []).filter((p) => p.id !== prepared.id)]); };
+  const result = await withOfflineMutation({ method: 'POST', url: '/api/payments', body: prepared, online: async () => {
+    const res = await authorizedFetch('/api/payments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prepared) }); await assertApiOk(res, 'تعذر تسجيل الدفعة'); return res.json();
+  }, localResult: prepared, localApply });
+  try { await refreshCurrentMonthArchiveApi(prepared.collectedBy || 'مسؤول الخزينة'); } catch (e) { console.warn('Archive refresh after payment skipped:', e); }
+  if (result && result.id) await mutateLocal<PaymentRecord[]>('payments', (current) => [result, ...(current || []).filter((item) => item.id !== result.id && item.id !== prepared.id)]);
+  return result;
+}
+export async function deletePaymentApi(id: string): Promise<void> {
+  const localApply = async () => { await mutateLocal<PaymentRecord[]>('payments', (current) => (current || []).filter((p) => p.id !== id)); };
+  await withOfflineMutation({ method: 'DELETE', url: `/api/payments/${id}`, online: async () => { const res = await authorizedFetch(`/api/payments/${id}`, { method: 'DELETE' }); await assertApiOk(res, 'تعذر حذف الدفعة'); }, localResult: undefined, localApply });
+  try { await refreshCurrentMonthArchiveApi(); } catch (e) { console.warn('Archive refresh after payment delete skipped:', e); }
+}
+
+// ----------------- EXPENSES -----------------
+export async function fetchExpenses(): Promise<ExpenseRecord[]> { return fetchCachedJson<ExpenseRecord[]>('/api/expenses', 'expenses'); }
+
+export async function createExpenseApi(expense: ExpenseRecord): Promise<ExpenseRecord> {
+  const prepared = { ...expense, id: expense.id || localId('expense') };
+  const localApply = async () => { await mutateLocal<ExpenseRecord[]>('expenses', (current) => [prepared, ...(current || []).filter((e) => e.id !== prepared.id)]); };
+  const result = await withOfflineMutation({ method: 'POST', url: '/api/expenses', body: prepared, online: async () => { const res = await authorizedFetch('/api/expenses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prepared) }); await assertApiOk(res, 'تعذر تسجيل المصروف'); return res.json(); }, localResult: prepared, localApply });
+  try { await refreshCurrentMonthArchiveApi((prepared as any).recordedBy || 'المدير العام (Admin)'); } catch (e) { console.warn('Archive refresh after expense skipped:', e); }
+  if (result && result.id) await mutateLocal<ExpenseRecord[]>('expenses', (current) => [result, ...(current || []).filter((item) => item.id !== result.id && item.id !== prepared.id)]);
+  return result;
+}
+export async function deleteExpenseApi(id: string): Promise<void> {
+  const localApply = async () => { await mutateLocal<ExpenseRecord[]>('expenses', (current) => (current || []).filter((e) => e.id !== id)); };
+  await withOfflineMutation({ method: 'DELETE', url: `/api/expenses/${id}`, online: async () => { const res = await authorizedFetch(`/api/expenses/${id}`, { method: 'DELETE' }); await assertApiOk(res, 'تعذر حذف المصروف'); }, localResult: undefined, localApply });
+  try { await refreshCurrentMonthArchiveApi(); } catch (e) { console.warn('Archive refresh after expense delete skipped:', e); }
+}
+
+// ----------------- COACHES -----------------
+export async function fetchCoaches(): Promise<Coach[]> { return fetchCachedJson<Coach[]>('/api/coaches', 'coaches'); }
+
+export async function bulkImportCoachesApi(coaches: Coach[]): Promise<{ saved: number }> {
+  if (isOfflineNow()) { for (const coach of coaches) await createCoachApi(coach); return { saved: coaches.length }; }
+  const res = await authorizedFetch('/api/coaches/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ coaches }) }); await assertApiOk(res, 'تعذر استيراد المدربين بالجملة'); const data = await res.json(); if (data?.archive) await mutateLocal<MonthlyArchiveRecord[]>('archives', (current) => [data.archive, ...(current || []).filter((a) => a.monthKey !== data.archive.monthKey)]); return data;
+}
+export async function createCoachApi(coach: Coach): Promise<Coach> {
+  const prepared = { ...coach, id: coach.id || localId('coach') };
+  const localApply = async () => { await mutateLocal<Coach[]>('coaches', (current) => [prepared, ...(current || []).filter((c) => c.id !== prepared.id)]); };
+  const result = await withOfflineMutation({ method: 'POST', url: '/api/coaches', body: prepared, online: async () => { const res = await authorizedFetch('/api/coaches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prepared) }); await assertApiOk(res, 'تعذر إضافة المدرب'); return res.json(); }, localResult: prepared, localApply });
+  try { await refreshCurrentMonthArchiveApi(); } catch (e) { console.warn('Archive refresh after coach save skipped:', e); }
+  if (result && result.id) await mutateLocal<Coach[]>('coaches', (current) => [result, ...(current || []).filter((item) => item.id !== result.id && item.id !== prepared.id)]);
+  return result;
+}
+export async function updateCoachApi(id: string, updates: Partial<Coach>): Promise<void> {
+  const baseVersion = await getLocalRecordVersion('coaches', id);
+  const mutationBody: any = { ...updates, _ifc_base_version: baseVersion };
+  const localApply = async () => { await mutateLocal<Coach[]>('coaches', (current) => (current || []).map((c) => c.id === id ? ({ ...c, ...updates } as Coach) : c)); };
+  await withOfflineMutation({ method: 'PUT', url: `/api/coaches/${id}`, body: mutationBody, online: async () => { const res = await authorizedFetch(`/api/coaches/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mutationBody) }); await assertApiOk(res, 'تعذر تعديل بيانات المدرب'); const result = await res.json().catch(() => null); if (result?.coach) await mutateLocal<Coach[]>('coaches', (current) => (current || []).map((c) => c.id === id ? result.coach : c)); }, localResult: undefined, localApply });
+}
+export async function deleteCoachApi(id: string): Promise<void> {
+  const baseVersion = await getLocalRecordVersion('coaches', id);
+  const body = { _ifc_base_version: baseVersion };
+  const localApply = async () => { await mutateLocal<Coach[]>('coaches', (current) => (current || []).filter((c) => c.id !== id)); };
+  await withOfflineMutation({ method: 'DELETE', url: `/api/coaches/${id}`, body, online: async () => { const res = await authorizedFetch(`/api/coaches/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await assertApiOk(res, 'تعذر حذف المدرب'); }, localResult: undefined, localApply });
+}
+
+// ----------------- SETTINGS -----------------
+export async function fetchSettings(): Promise<AcademySettings> { return fetchCachedJson<AcademySettings>('/api/settings', 'settings'); }
+
+
+export async function resetAcademyDataApi(): Promise<{ success: boolean; deleted: Record<string, number> }> {
+  const localApply = async () => { await clearAllLocalData(); };
+  if (isOfflineNow()) {
+    // Reset is a global operation: discard older pending edits so they can never
+    // resurrect data after the reset reaches Supabase.
+    const queued = await getQueuedMutations();
+    for (const item of queued) await removeQueuedMutation(item.id);
+    await enqueueMutation({ method: 'POST', url: '/api/reset-academy-data', body: {}, epoch: Number(localStorage.getItem('ifc_server_data_epoch') || 1) });
+    await localApply();
+    dispatchSyncEvent('ifc-sync-queued');
+    return { success: true, deleted: {} };
+  }
+  try {
+    const res = await authorizedFetch('/api/reset-academy-data', { method: 'POST' });
+    if (!res.ok) throw await readApiError(res, 'تعذر تصفير بيانات الأكاديمية');
+    const result = await res.json();
+    await localApply();
+    return result;
+  } catch (error) {
+    if (!isNetworkFailure(error)) throw error;
+    const queued = await getQueuedMutations(); for (const item of queued) await removeQueuedMutation(item.id);
+    await enqueueMutation({ method: 'POST', url: '/api/reset-academy-data', body: {}, epoch: Number(localStorage.getItem('ifc_server_data_epoch') || 1) });
+    await localApply();
+    dispatchSyncEvent('ifc-sync-queued');
+    return { success: true, deleted: {} };
+  }
+}
+
+export async function updateSettingsApi(settings: AcademySettings): Promise<AcademySettings> {
+  const localApply = async () => { await setLocalSnapshot('settings', settings); writeCache('settings', settings); };
+  return withOfflineMutation({ method: 'PUT', url: '/api/settings', body: settings, online: async () => { const res = await authorizedFetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) }); if (!res.ok) throw await readApiError(res, 'تعذر حفظ الإعدادات'); const data = await res.json() as AcademySettings; return data; }, localResult: settings, localApply });
+}
+
+// ----------------- MONTHLY ARCHIVES -----------------
+export async function fetchMonthlyArchives(): Promise<MonthlyArchiveRecord[]> { return fetchCachedJson<MonthlyArchiveRecord[]>('/api/archives', 'archives'); }
+export async function createMonthlyArchiveApi(archive: MonthlyArchiveRecord): Promise<MonthlyArchiveRecord> {
+  const prepared = { ...archive, id: archive.id || localId('archive') };
+  const localApply = async () => { await mutateLocal<MonthlyArchiveRecord[]>('archives', (current) => [prepared, ...(current || []).filter((a) => a.id !== prepared.id && a.monthKey !== prepared.monthKey)]); };
+  const result = await withOfflineMutation({ method: 'POST', url: '/api/archives', body: prepared, online: async () => { const res = await authorizedFetch('/api/archives', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prepared) }); if (!res.ok) throw await readApiError(res, 'تعذر حفظ أرشيف الشهر'); return res.json(); }, localResult: prepared, localApply });
+  if (result && result.id) await mutateLocal<MonthlyArchiveRecord[]>('archives', (current) => [result, ...(current || []).filter((item) => item.id !== result.id && item.id !== prepared.id)]);
+  return result;
+}
+export async function deleteMonthlyArchiveApi(id: string): Promise<void> {

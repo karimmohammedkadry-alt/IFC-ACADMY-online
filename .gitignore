@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+*.key

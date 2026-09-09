@@ -22,7 +22,7 @@ SUPABASE_SECRET_KEY=sb_secret_...
 GEMINI_API_KEY=...
 ```
 
-`SUPABASE_SECRET_KEY` is server-only. Never put it in `VITE_*` variables or frontend code.
+`SUPABASE_SECRET_KEY` is server-only. Never expose it to the browser or Windows client.
 
 ## Supabase setup
 
@@ -125,3 +125,23 @@ The repository contains no demo player/payment/expense/coach records. If an exis
 - التشغيل التلقائي في Windows: `backup-agent\install-startup.ps1`
 
 المزامنة لا تعتمد على فلاتر الموقع، وتنعكس فيها الإضافة والتعديل والحذف من Supabase. لا يتم حفظ حقول كلمات المرور أو session tokens في النسخة المحلية.
+
+## Windows / Tauri + Offline + Auto Update (V14)
+
+V14 adds the native Windows architecture agreed for IFC Academy:
+
+- Tauri 2 Windows shell.
+- Native SQLite database: `ifc_academy.db`.
+- Offline snapshots and ordered Sync Queue stored in SQLite on Windows.
+- Web keeps IndexedDB as its local-first fallback.
+- Online API calls from Windows go to the Railway URL configured as `RAILWAY_APP_URL`.
+- Automatic network probing and automatic queue synchronization after connectivity returns.
+- Signed Tauri updater checks GitHub Releases automatically and installs updates.
+- Database is stored outside the installation bundle, so updating the program does not replace `ifc_academy.db`.
+- GitHub Actions builds NSIS/MSI on pushes to `main`/`master`.
+
+See `WINDOWS_AUTO_UPDATE_SETUP_AR.md` for the one-time GitHub secret setup.
+
+
+## V15 System Infrastructure
+راجع `V15_UPGRADE_NOTES_AR.md` و migration `supabase/migrations/005_v15_system_infrastructure.sql`. V15 تضيف idempotency، audit، Trash، تقارير date-range، health diagnostics، وفهارس أداء مع الحفاظ على Web/Railway/Supabase وWindows/SQLite/Offline Sync.
