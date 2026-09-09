@@ -299,12 +299,11 @@ export default function App() {
     // A small automatic snapshot keeps a human-readable/inspectable copy in the IFC Academy Data folder.
     const snapshotTimer = window.setInterval(() => {
       if (localStorage.getItem(AUTH_TOKEN_KEY)) void syncDatabaseSnapshot();
-    }, 10000);
+    }, 60000);
     const syncTimer = window.setInterval(() => {
       if (document.visibilityState === 'visible' && localStorage.getItem(AUTH_TOKEN_KEY)) void loadDatabaseData();
-    }, 15000);
+    }, 60000);
     const handleOnline = () => { if (localStorage.getItem(AUTH_TOKEN_KEY)) { void loadDatabaseData(); void flushPendingCloudChanges(); } };
-    const cloudSyncTimer = window.setInterval(() => { if (document.visibilityState === 'visible' && localStorage.getItem(AUTH_TOKEN_KEY)) void flushPendingCloudChanges(); }, 30000);
     const handleAuthExpired = () => {
       localStorage.removeItem(AUTH_TOKEN_KEY);
       localStorage.removeItem('ifc_admin_refresh_token');
