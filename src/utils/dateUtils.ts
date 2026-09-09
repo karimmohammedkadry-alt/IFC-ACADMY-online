@@ -42,12 +42,17 @@ export function calculateEndDateByMonths(startDateStr: string, months: number): 
   if (!startDateStr) {
     startDateStr = new Date().toISOString().split('T')[0];
   }
-  const date = new Date(startDateStr);
+  const date = new Date(`${startDateStr}T00:00:00`);
   if (isNaN(date.getTime())) {
     return new Date().toISOString().split('T')[0];
   }
-  date.setMonth(date.getMonth() + months);
-  return date.toISOString().split('T')[0];
+  // Clamp to the last valid day of the target month (e.g. Jan 31 + 1 month = Feb 28/29).
+  const originalDay = date.getDate();
+  const targetYear = date.getFullYear() + Math.floor((date.getMonth() + months) / 12);
+  const targetMonth = ((date.getMonth() + months) % 12 + 12) % 12;
+  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
+  date.setFullYear(targetYear, targetMonth, Math.min(originalDay, lastDay));
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 /**

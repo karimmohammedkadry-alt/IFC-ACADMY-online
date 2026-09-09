@@ -1,17 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Settings as SettingsIcon, Save, ShieldCheck, Bell, Download, RotateCcw,
-  CheckCircle, MessageSquare, HardDrive, Volume2, Play, Upload, Palette,
-  Monitor, KeyRound, UserRound, Building2, CalendarDays, Gauge, LockKeyhole,
-  Database, Trash2, RefreshCw, Clock3, AlertTriangle, Zap, Server, HardDriveDownload, FileText
+  Settings as SettingsIcon, Save, Bell, Download, CheckCircle, MessageSquare,
+  HardDrive, Play, Upload, Palette, KeyRound, Building2, CalendarDays, Gauge,
+  Database, Trash2, RefreshCw, Clock3, AlertTriangle, Zap, Server,
+  HardDriveDownload, Activity, RotateCcw
 } from 'lucide-react';
 import { AcademySettings } from '../types';
 import { soundAlertManager } from '../utils/soundAlert';
 import * as XLSX from 'xlsx';
 import { SystemToast, SystemToastType } from '../components/SystemToast';
 import { getDesktopNotificationPermission, requestDesktopNotificationPermission, sendDesktopNotification } from '../utils/desktopNotifier';
-import { updateAdminCredentials, getExcelOnlineStatus, startExcelOnlineConnect, listExcelOnlineWorkbooks, selectExcelOnlineWorkbook, createExcelOnlineWorkbook, syncExcelOnlineApi, disconnectExcelOnlineApi, downloadExcelOnlineApi, uploadExcelOnlineApi } from '../services/api';
-import { connectExcelFile, ensureExcelPermission, restoreExcelHandle, readExcelWorkbook, writeExcelWorkbook, getExcelSyncMeta, markExcelConnected, markExcelDisconnected, markExcelFileHash, markExcelImported, markExcelError } from '../utils/excelSync';
+import { updateAdminCredentials } from '../services/api';
+import { SystemCenter } from '../components/SystemCenter';
 
 interface SettingsViewProps {
   settings: AcademySettings;
@@ -23,14 +23,9 @@ interface SettingsViewProps {
   isDbConnected?: boolean;
   currentUsername?: string;
   onCredentialsChanged?: (username: string) => void;
-  excelDataRevision?: number;
-  buildExcelWorkbook?: () => XLSX.WorkBook;
-  onAutoImportExcel?: (data: any) => Promise<void>;
 }
 
-type SecurityPrefs = {
-  autoLockMinutes: number;
-  confirmDangerousActions: boolean;
+type PerformancePrefs = {
   soundsEnabled: boolean;
   cacheEnabled: boolean;
   autoBackupEnabled: boolean;
@@ -53,104 +48,30 @@ const readLocal = <T,>(key: string, fallback: T): T => {
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings, onSaveSettings, onResetData, onExportAllData, onImportAllData,
   onStartNewMonth, isDbConnected, currentUsername = 'admin', onCredentialsChanged,
-  excelDataRevision = 0, buildExcelWorkbook, onAutoImportExcel,
 }) => {
   const [formData, setFormData] = useState<AcademySettings>(settings);
   const [savedSuccess, setSavedSuccess] = useState(false);
-  const [tab, setTab] = useState<'academy' | 'subscriptions' | 'notifications' | 'appearance' | 'performance' | 'backup'>('academy');
+  const [tab, setTab] = useState<'academy' | 'subscriptions' | 'notifications' | 'appearance' | 'data' | 'system' | 'account'>('academy');
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [testPhone, setTestPhone] = useState('01000000000');
   const [msgTemplate, setMsgTemplate] = useState(() => localStorage.getItem('ifc_whatsapp_template') || 'مرحباً ولي أمر اللاعب {اسم_اللاعب}، نذكركم بأن الاشتراك بقيمة {المبلغ_المستحق} ج.م يحتاج إلى التجديد.');
   const [desktopPermission, setDesktopPermission] = useState(getDesktopNotificationPermission());
-  const [security, setSecurity] = useState<SecurityPrefs>(() => readLocal('ifc_security_prefs', { autoLockMinutes: 30, confirmDangerousActions: true, soundsEnabled: true, cacheEnabled: true, autoBackupEnabled: true, backupRetentionDays: 30, reducedMotion: false }));
+  const [performance, setPerformance] = useState<PerformancePrefs>(() => readLocal('ifc_security_prefs', { soundsEnabled: true, cacheEnabled: true, autoBackupEnabled: true, backupRetentionDays: 30, reducedMotion: false }));
   const [academyPrefs, setAcademyPrefs] = useState<AcademyPrefs>(() => readLocal('ifc_academy_prefs', { monthlySessions: 8, expiryWarningDays: 7, oneSessionWarning: true, expiryWarning: true, expiredWarning: true }));
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const [toast, setToast] = useState<{ open: boolean; type: SystemToastType; title: string; message?: string }>({ open: false, type: 'success', title: '' });
   const [loginUsername, setLoginUsername] = useState(currentUsername || 'admin');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [savingCredentials, setSavingCredentials] = useState(false);
-  const [excelSync, setExcelSync] = useState(() => getExcelSyncMeta());
-  const [excelCloud, setExcelCloud] = useState<any>({ connected: false });
-  const [excelEmail, setExcelEmail] = useState('');
-  const [excelWorkbooks, setExcelWorkbooks] = useState<any[]>([]);
-  const excelUploadRef = useRef<HTMLInputElement>(null);
-  const excelHandleRef = useRef<FileSystemFileHandle | null>(null);
-  const excelBusyRef = useRef(false);
-  const lastExcelRevisionRef = useRef(-1);
-  const lastExcelHashRef = useRef('');
-  const pendingExcelHashRef = useRef('');
-  const pendingExcelStableCountRef = useRef(0);
-  const buildExcelWorkbookRef = useRef(buildExcelWorkbook);
-  const onAutoImportExcelRef = useRef(onAutoImportExcel);
-  useEffect(() => { buildExcelWorkbookRef.current = buildExcelWorkbook; onAutoImportExcelRef.current = onAutoImportExcel; }, [buildExcelWorkbook, onAutoImportExcel]);
-
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const status = await getExcelOnlineStatus();
-        if (!cancelled) { setExcelCloud(status); setExcelEmail(status.email || ''); }
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  const refreshExcelCloud = async () => {
-    const status = await getExcelOnlineStatus();
-    setExcelCloud(status);
-    setExcelEmail(status.email || '');
-    return status;
-  };
-
-  const loadExcelWorkbooks = async () => {
-    try { const files = await listExcelOnlineWorkbooks(); setExcelWorkbooks(files); }
-    catch (e: any) { showToast('error', 'تعذر قراءة ملفات Excel', e?.message); }
-  };
-
-  const connectExcelCloud = () => {
-    startExcelOnlineConnect(excelEmail);
-  };
-
-  const createExcelCloud = async () => {
-    try {
-      const name = window.prompt('اسم ملف Excel الجديد', 'IFC_Academy.xlsx') || 'IFC_Academy.xlsx';
-      const item = await createExcelOnlineWorkbook(name);
-      await refreshExcelCloud();
-      showToast('success', 'تم إنشاء Excel Online', `تم إنشاء ${item.name} وربطه بالنظام.`);
-    } catch (e: any) { showToast('error', 'تعذر إنشاء Excel', e?.message); }
-  };
-
-  const syncExcelCloudNow = async () => {
-    try {
-      const result = await syncExcelOnlineApi('auto');
-      if (result.direction === 'excel_to_system' && onAutoImportExcel && result.sheets) await onAutoImportExcel(result.sheets);
-      await refreshExcelCloud();
-      if (result.direction === 'conflict') showToast('error', 'تعارض Excel', result.message);
-      else showToast('success', 'تمت مزامنة Excel Online', result.direction === 'excel_to_system' ? 'تم جلب تعديلات Excel إلى النظام.' : 'تم حفظ بيانات النظام في Excel.');
-    } catch (e: any) { showToast('error', 'فشلت مزامنة Excel Online', e?.message); }
-  };
-
-  const downloadExcelCloud = async () => {
-    try {
-      const { blob, name } = await downloadExcelOnlineApi();
-      const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
-      showToast('success', 'تم تنزيل Excel', 'تم تنزيل نسخة Excel الحالية على الجهاز.');
-    } catch (e: any) { showToast('error', 'تعذر تنزيل Excel', e?.message); }
-  };
-
-  const uploadExcelCloud = async (file?: File) => {
-    if (!file) return;
-    try { await uploadExcelOnlineApi(file); await refreshExcelCloud(); showToast('success', 'تم رفع Excel', 'تم استبدال الملف السحابي بالملف الذي اخترته.'); }
-    catch (e: any) { showToast('error', 'تعذر رفع Excel', e?.message); }
-    finally { if (excelUploadRef.current) excelUploadRef.current.value = ''; }
-  };
+  const [importing, setImporting] = useState(false);
+  const [restoreMode, setRestoreMode] = useState(false);
 
   useEffect(() => setFormData(settings), [settings]);
   useEffect(() => setLoginUsername(currentUsername || 'admin'), [currentUsername]);
-  useEffect(() => localStorage.setItem('ifc_security_prefs', JSON.stringify(security)), [security]);
+  useEffect(() => localStorage.setItem('ifc_security_prefs', JSON.stringify(performance)), [performance]);
   useEffect(() => localStorage.setItem('ifc_academy_prefs', JSON.stringify(academyPrefs)), [academyPrefs]);
 
   const showToast = (type: SystemToastType, title: string, message?: string) => {
@@ -175,8 +96,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         const ctx = canvas.getContext('2d');
         if (!ctx) { setFormData(prev => ({ ...prev, customLogoUrl: src })); return; }
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const compressed = canvas.toDataURL('image/webp', 0.88);
-        setFormData(prev => ({ ...prev, customLogoUrl: compressed }));
+        setFormData(prev => ({ ...prev, customLogoUrl: canvas.toDataURL('image/webp', 0.88) }));
         showToast('success', 'تم اختيار اللوجو', 'اضغط حفظ الإعدادات لتثبيت الصورة في النظام.');
       };
       img.onerror = () => showToast('error', 'تعذر قراءة الصورة', 'جرّب صورة أخرى.');
@@ -200,7 +120,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const save = async (e?: React.FormEvent) => {
     e?.preventDefault();
     localStorage.setItem('ifc_whatsapp_template', msgTemplate);
-    localStorage.setItem('ifc_security_prefs', JSON.stringify(security));
+    localStorage.setItem('ifc_security_prefs', JSON.stringify(performance));
     localStorage.setItem('ifc_academy_prefs', JSON.stringify(academyPrefs));
     await onSaveSettings(formData);
     setSavedSuccess(true);
@@ -223,85 +143,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       showToast('success', 'تم تغيير بيانات الدخول', 'تم حفظ اسم المستخدم وتحديث كلمة المرور في Supabase Auth بأمان.');
     } catch (e: any) {
       showToast('error', 'تعذر تغيير بيانات الدخول', e?.message || 'حاول مرة أخرى.');
-    } finally {
-      setSavingCredentials(false);
-    }
+    } finally { setSavingCredentials(false); }
   };
 
-  const refreshExcelSyncState = () => setExcelSync(getExcelSyncMeta());
-
-  const connectAutoExcel = async () => {
-    try {
-      const result = await connectExcelFile();
-      excelHandleRef.current = result.handle;
-      markExcelConnected(result.handle.name);
-      const workbook = buildExcelWorkbook?.();
-      if (workbook) {
-        const hash = await writeExcelWorkbook(result.handle, workbook);
-        markExcelFileHash(hash);
-        lastExcelHashRef.current = hash;
-        lastExcelRevisionRef.current = excelDataRevision;
-      }
-      window.dispatchEvent(new Event('ifc-excel-connected'));
-      refreshExcelSyncState();
-      showToast('success', 'تم ربط Excel تلقائيًا', 'سيتم تحديث ملف Excel تلقائيًا، وأي تعديل خارجي عليه سيُستورد بعد التأكد من ثبات الملف.');
-    } catch (e: any) {
-      showToast('error', 'تعذر ربط Excel', e?.message || 'حاول مرة أخرى من Chrome أو Edge.');
-    }
-  };
-
-  const requestExcelPermission = async () => {
-    const handle = excelHandleRef.current || await restoreExcelHandle();
-    if (!handle) return connectAutoExcel();
-    const ok = await ensureExcelPermission(handle);
-    if (!ok) return showToast('error', 'صلاحية Excel مطلوبة', 'اسمح للنظام بالوصول إلى ملف Excel حتى تعمل المزامنة التلقائية.');
-    excelHandleRef.current = handle;
-    markExcelConnected(handle.name);
-    window.dispatchEvent(new Event('ifc-excel-connected'));
-    refreshExcelSyncState();
-  };
-
-  const disconnectAutoExcel = () => {
-    excelHandleRef.current = null;
-    markExcelDisconnected();
-    window.dispatchEvent(new Event('ifc-excel-disconnected'));
-    refreshExcelSyncState();
-    showToast('success', 'تم فصل Excel', 'لن تتم أي قراءة أو كتابة تلقائية للملف.');
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const handle = await restoreExcelHandle();
-      if (!handle || cancelled) return;
-      excelHandleRef.current = handle;
-      markExcelConnected(handle.name);
-      refreshExcelSyncState();
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-
-  const requestDesktop = async () => {
-    const granted = await requestDesktopNotificationPermission();
-    setDesktopPermission(getDesktopNotificationPermission());
-    if (granted) {
-      setFormData(p => ({ ...p, desktopNotificationsEnabled: true }));
-      sendDesktopNotification({ title: formData.academyName || 'IFC Academy', body: 'تم تفعيل إشعارات سطح المكتب بنجاح.', playSound: true, soundType: 'success' });
-    }
-  };
-
-  const testWhatsApp = () => {
-    const clean = testPhone.replace(/\D/g, '');
-    const phone = clean.startsWith('0') ? `2${clean}` : clean;
-    const msg = msgTemplate.replace('{اسم_اللاعب}', 'محمد أحمد').replace('{رقم_العضوية}', '1001').replace('{المبلغ_المستحق}', '500');
-    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank');
-  };
-
-  const importBackup = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!/\.(xlsx|xls)$/i.test(file.name)) { showToast('error', 'استخدم ملف Excel فقط'); e.target.value = ''; return; }
+    if (!/\.(xlsx|xls)$/i.test(file.name)) { showToast('error', 'ملف غير صالح', 'استخدم ملف Excel بصيغة XLSX أو XLS.'); e.target.value = ''; return; }
+    setImporting(true);
     const reader = new FileReader();
     reader.onload = async ev => {
       try {
@@ -310,17 +159,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         workbook.SheetNames.forEach(name => { sheets[name] = XLSX.utils.sheet_to_json(workbook.Sheets[name], { defval: '', raw: true }); });
         if (!Object.values(sheets).some(r => r.length)) throw new Error('ملف Excel فارغ.');
         await onImportAllData?.({ __format: 'ifc-excel-v2', ...sheets });
-        showToast('success', 'تم إرسال النسخة للاسترجاع', 'سيتم تحديث البيانات بعد اكتمال الاستيراد.');
-      } catch (e: any) { showToast('error', 'تعذر استرجاع النسخة', e?.message || 'تأكد من سلامة الملف.'); }
-      finally { e.target.value = ''; }
+        showToast('success', restoreMode ? 'تمت استعادة البيانات' : 'تم استيراد البيانات', restoreMode ? 'تمت معالجة النسخة الاحتياطية وإرسالها للحفظ والمزامنة.' : 'تم إرسال البيانات للنظام ليتم حفظها ومزامنتها.');
+      } catch (err: any) {
+        showToast('error', 'تعذر استيراد البيانات', err?.message || 'تأكد من سلامة الملف.');
+      } finally { setImporting(false); setRestoreMode(false); e.target.value = ''; }
     };
     reader.readAsArrayBuffer(file);
   };
 
-  const localBackupPath = 'C:\\IFC_ACADEMY_DATA';
+  const chooseRestore = () => { setRestoreMode(true); window.setTimeout(() => fileInputRef.current?.click(), 0); };
+
   const tabs = [
-    ['academy', 'الأكاديمية', Building2], ['subscriptions', 'الاشتراكات', CalendarDays], ['notifications', 'الإشعارات', Bell],
-    ['appearance', 'المظهر', Palette], ['performance', 'الأداء والأمان', Gauge], ['backup', 'النسخ الاحتياطي', HardDrive], ['account', 'بيانات الدخول', KeyRound],
+    ['academy', 'الأكاديمية', Building2],
+    ['subscriptions', 'الاشتراكات', CalendarDays],
+    ['notifications', 'الإشعارات', Bell],
+    ['appearance', 'المظهر', Palette],
+    ['data', 'البيانات والنسخ', HardDrive],
+    ['system', 'النظام والمزامنة', Activity],
+    ['account', 'بيانات الدخول', KeyRound],
   ] as const;
 
   return (
@@ -328,62 +184,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="w-11 h-11 rounded-2xl bg-blue-500/15 border border-blue-500/30 flex items-center justify-center text-blue-400"><SettingsIcon className="w-5 h-5" /></div>
-          <div><h1 className="text-xl font-black text-white">إعدادات الأكاديمية والنظام</h1><p className="text-xs text-slate-400 mt-1">مركز واحد للتحكم في التشغيل، الاشتراكات، الإشعارات، المظهر، الأداء، الأمان والنسخ الاحتياطي.</p></div>
+          <div><h1 className="text-xl font-black text-white">إعدادات الأكاديمية والنظام</h1><p className="text-xs text-slate-400 mt-1">كل إعدادات الأكاديمية والبيانات والمزامنة في مكان واحد.</p></div>
         </div>
         <div className={`text-[11px] font-bold px-3 py-1.5 rounded-full border ${isDbConnected ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20' : 'text-rose-300 bg-rose-500/10 border-rose-500/20'}`}>{isDbConnected ? '● قاعدة البيانات متصلة' : '● قاعدة البيانات غير متصلة'}</div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-7 gap-2 p-2 rounded-2xl bg-white/[0.03] border border-white/10">
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-2 p-2 rounded-2xl bg-white/[0.03] border border-white/10">
         {tabs.map(([id, label, Icon]) => <button key={id} type="button" onClick={() => setTab(id)} className={`px-3 py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${tab === id ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-slate-400 hover:text-white hover:bg-white/[0.05]'}`}><Icon className="w-4 h-4" />{label}</button>)}
       </div>
 
       <form onSubmit={save} className="space-y-5">
-        {tab === 'account' && <>
-          <Section title="تغيير اسم المستخدم وكلمة المرور" icon={<KeyRound className="w-4 h-4 text-amber-400" />}>
-            <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-100 leading-6">
-              غيّر بيانات الدخول من هنا. اسم المستخدم يُحفظ في ملف المدير وقاعدة البيانات، وكلمة المرور تُدار بواسطة Supabase Auth ولا يتم حفظها كنص مكشوف أو داخل كود الموقع.
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Field label="اسم المستخدم الجديد"><input autoComplete="username" value={loginUsername} onChange={e => setLoginUsername(e.target.value)} /></Field>
-              <div />
-              <Field label="كلمة المرور الجديدة"><input type="password" autoComplete="new-password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="6 أحرف/أرقام على الأقل" /></Field>
-              <Field label="تأكيد كلمة المرور"><input type="password" autoComplete="new-password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} /></Field>
-            </div>
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button type="button" onClick={() => { setLoginUsername(currentUsername || 'admin'); setNewPassword(''); setConfirmPassword(''); }} className="btn-gray">إلغاء التعديل</button>
-              <button type="button" disabled={savingCredentials} onClick={saveCredentials} className="btn-blue disabled:opacity-50">{savingCredentials ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} {savingCredentials ? 'جاري الحفظ...' : 'حفظ بيانات الدخول'}</button>
-            </div>
-          </Section>
-        </>}
+        {tab === 'academy' && <Section title="بيانات الأكاديمية" icon={<Building2 className="w-4 h-4 text-blue-400" />}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Field label="اسم الأكاديمية"><input value={formData.academyName} onChange={e => setFormData({...formData, academyName:e.target.value})} /></Field>
+            <Field label="الاسم المختصر / الشعار"><input value={formData.logoText} onChange={e => setFormData({...formData, logoText:e.target.value})} /></Field>
+            <Field label="الهاتف"><input value={formData.phone} onChange={e => setFormData({...formData, phone:e.target.value})} /></Field>
+            <Field label="البريد الإلكتروني"><input value={formData.email} onChange={e => setFormData({...formData, email:e.target.value})} /></Field>
+            <Field label="العنوان"><input value={formData.address} onChange={e => setFormData({...formData, address:e.target.value})} /></Field>
+            <Field label="العملة"><input value={formData.currency} onChange={e => setFormData({...formData, currency:e.target.value})} /></Field>
+            <Field label="الموسم الحالي"><input value={formData.currentSeason} onChange={e => setFormData({...formData, currentSeason:e.target.value})} /></Field>
+          </div>
+        </Section>}
 
-        {tab === 'academy' && <>
-          <Section title="بيانات الأكاديمية" icon={<Building2 className="w-4 h-4 text-blue-400" />}>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Field label="اسم الأكاديمية"><input value={formData.academyName} onChange={e => setFormData({...formData, academyName:e.target.value})} /></Field>
-              <Field label="الاسم المختصر / الشعار"><input value={formData.logoText} onChange={e => setFormData({...formData, logoText:e.target.value})} /></Field>
-              <Field label="الهاتف"><input value={formData.phone} onChange={e => setFormData({...formData, phone:e.target.value})} /></Field>
-              <Field label="البريد الإلكتروني"><input value={formData.email} onChange={e => setFormData({...formData, email:e.target.value})} /></Field>
-              <Field label="العنوان"><input value={formData.address} onChange={e => setFormData({...formData, address:e.target.value})} /></Field>
-              <Field label="العملة"><input value={formData.currency} onChange={e => setFormData({...formData, currency:e.target.value})} /></Field>
-              <Field label="الموسم الحالي"><input value={formData.currentSeason} onChange={e => setFormData({...formData, currentSeason:e.target.value})} /></Field>
-            </div>
-          </Section>
-        </>}
-
-        {tab === 'subscriptions' && <>
-          <Section title="إعدادات الاشتراك والحصص" icon={<CalendarDays className="w-4 h-4 text-emerald-400" />}>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <NumberField label="عدد حصص الاشتراك الشهري" value={academyPrefs.monthlySessions} min={1} max={31} onChange={v=>setAcademyPrefs(p=>({...p,monthlySessions:v}))} />
-              <NumberField label="التنبيه قبل انتهاء الاشتراك (بالأيام)" value={academyPrefs.expiryWarningDays} min={1} max={30} onChange={v=>setAcademyPrefs(p=>({...p,expiryWarningDays:v}))} />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
-              <Toggle label="تنبيه قرب انتهاء الاشتراك" checked={academyPrefs.expiryWarning} onChange={v=>setAcademyPrefs(p=>({...p,expiryWarning:v}))} />
-              <Toggle label="تنبيه عند بقاء حصة واحدة" checked={academyPrefs.oneSessionWarning} onChange={v=>setAcademyPrefs(p=>({...p,oneSessionWarning:v}))} />
-              <Toggle label="تنبيه الاشتراك المنتهي" checked={academyPrefs.expiredWarning} onChange={v=>setAcademyPrefs(p=>({...p,expiredWarning:v}))} />
-            </div>
-            <div className="mt-4 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-xs text-blue-200">القيمة الحالية للحصص الشهرية: <b>{academyPrefs.monthlySessions}</b> حصص. تم ضبطها افتراضيًا على 8 ويمكن تغييرها من هنا.</div>
-          </Section>
-        </>}
+        {tab === 'subscriptions' && <Section title="إعدادات الاشتراك والحصص" icon={<CalendarDays className="w-4 h-4 text-emerald-400" />}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <NumberField label="عدد حصص الاشتراك الشهري" value={academyPrefs.monthlySessions} min={1} max={31} onChange={v=>setAcademyPrefs(p=>({...p,monthlySessions:v}))} />
+            <NumberField label="التنبيه قبل انتهاء الاشتراك (بالأيام)" value={academyPrefs.expiryWarningDays} min={1} max={30} onChange={v=>setAcademyPrefs(p=>({...p,expiryWarningDays:v}))} />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+            <Toggle label="تنبيه قرب انتهاء الاشتراك" checked={academyPrefs.expiryWarning} onChange={v=>setAcademyPrefs(p=>({...p,expiryWarning:v}))} />
+            <Toggle label="تنبيه عند بقاء حصة واحدة" checked={academyPrefs.oneSessionWarning} onChange={v=>setAcademyPrefs(p=>({...p,oneSessionWarning:v}))} />
+            <Toggle label="تنبيه الاشتراك المنتهي" checked={academyPrefs.expiredWarning} onChange={v=>setAcademyPrefs(p=>({...p,expiredWarning:v}))} />
+          </div>
+        </Section>}
 
         {tab === 'notifications' && <>
           <Section title="مركز الإشعارات والرسائل" icon={<Bell className="w-4 h-4 text-amber-400" />}>
@@ -393,27 +226,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <Toggle label="تنبيهات SMS" checked={formData.smsAlertsEnabled} onChange={v=>setFormData({...formData, smsAlertsEnabled:v})} />
             </div>
             <div className="flex gap-2 flex-wrap mt-4">
-              {desktopPermission !== 'granted' && <button type="button" onClick={requestDesktop} className="btn-blue"><Bell className="w-4 h-4" /> طلب إذن إشعارات المتصفح</button>}
+              {desktopPermission !== 'granted' && <button type="button" onClick={async()=>{const granted=await requestDesktopNotificationPermission();setDesktopPermission(getDesktopNotificationPermission());if(granted){setFormData(p=>({...p,desktopNotificationsEnabled:true}));sendDesktopNotification({title:formData.academyName||'IFC Academy',body:'تم تفعيل إشعارات سطح المكتب بنجاح.',playSound:true,soundType:'success'});}}} className="btn-blue"><Bell className="w-4 h-4" /> طلب إذن الإشعارات</button>}
               <button type="button" onClick={()=>sendDesktopNotification({title:formData.academyName||'IFC Academy',body:'هذا إشعار تجريبي من النظام.',playSound:true,soundType:'warning'})} className="btn-gray"><Play className="w-4 h-4" /> تجربة إشعار</button>
             </div>
           </Section>
           <Section title="قالب رسالة واتساب" icon={<MessageSquare className="w-4 h-4 text-emerald-400" />}>
             <textarea value={msgTemplate} onChange={e=>setMsgTemplate(e.target.value)} rows={5} className="w-full bg-white/[0.04] border border-white/10 rounded-xl p-3 text-sm text-white outline-none focus:border-emerald-400" />
             <p className="text-[11px] text-slate-500 mt-2">المتغيرات: {'{اسم_اللاعب}'} — {'{رقم_العضوية}'} — {'{المبلغ_المستحق}'}</p>
-            <div className="flex gap-2 mt-3"><input value={testPhone} onChange={e=>setTestPhone(e.target.value)} className="bg-white/[0.04] border border-white/10 rounded-xl px-3 py-2 text-xs text-white" placeholder="رقم الاختبار" /><button type="button" onClick={testWhatsApp} className="btn-green"><MessageSquare className="w-4 h-4" /> تجربة واتساب</button></div>
+            <div className="flex gap-2 mt-3"><input value={testPhone} onChange={e=>setTestPhone(e.target.value)} className="bg-white/[0.04] border border-white/10 rounded-xl px-3 py-2 text-xs text-white" placeholder="رقم الاختبار" /><button type="button" onClick={()=>{const clean=testPhone.replace(/\D/g,'');const phone=clean.startsWith('0')?`2${clean}`:clean;const msg=msgTemplate.replace('{اسم_اللاعب}','محمد أحمد').replace('{رقم_العضوية}','1001').replace('{المبلغ_المستحق}','500');window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`,'_blank');}} className="btn-green"><MessageSquare className="w-4 h-4" /> تجربة واتساب</button></div>
           </Section>
         </>}
 
         {tab === 'appearance' && <Section title="المظهر والهوية البصرية" icon={<Palette className="w-4 h-4 text-purple-400" />}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Field label="لوجو الأكاديمية">
-              <div className="flex flex-wrap items-center gap-3">
-                <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={e=>handleLogoFile(e.target.files?.[0])} />
-                <button type="button" onClick={() => fileInputRef.current?.click()} className="btn-blue"><Upload className="w-4 h-4" /> اختيار صورة</button>
-                {formData.customLogoUrl ? <button type="button" onClick={() => setFormData(prev => ({...prev, customLogoUrl: ''}))} className="btn-gray">مسح اللوجو</button> : null}
-                {formData.customLogoUrl ? <img src={formData.customLogoUrl} alt="معاينة اللوجو" className="w-14 h-14 rounded-xl object-cover border border-white/10" /> : <span className="text-xs text-slate-500">لم يتم اختيار صورة</span>}
-              </div>
-            </Field>
+            <Field label="لوجو الأكاديمية"><div className="flex flex-wrap items-center gap-3"><input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={e=>handleLogoFile(e.target.files?.[0])} /><button type="button" onClick={()=>logoInputRef.current?.click()} className="btn-blue"><Upload className="w-4 h-4" /> اختيار صورة</button>{formData.customLogoUrl ? <button type="button" onClick={()=>setFormData(prev=>({...prev,customLogoUrl:''}))} className="btn-gray">مسح اللوجو</button>:null}{formData.customLogoUrl?<img src={formData.customLogoUrl} alt="معاينة اللوجو" className="w-14 h-14 rounded-xl object-cover border border-white/10"/>:<span className="text-xs text-slate-500">لم يتم اختيار صورة</span>}</div></Field>
             <Field label="الثيم"><select value={formData.colorTheme || 'classic-blue'} onChange={e=>applyThemePreset(e.target.value as any)}><option value="classic-blue">Classic Blue</option><option value="royal-gold">Royal Gold</option><option value="emerald">Emerald</option><option value="obsidian">Obsidian</option><option value="custom">Custom</option></select></Field>
             <ColorField label="اللون الأساسي" value={formData.primaryColor || '#2563eb'} onChange={v=>setFormData({...formData,primaryColor:v})}/>
             <ColorField label="لون الخلفية" value={formData.backgroundColor || '#020617'} onChange={v=>setFormData({...formData,backgroundColor:v})}/>
@@ -421,95 +247,46 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </Section>}
 
-        {tab === 'performance' && <>
-          <Section title="الأداء والسرعة" icon={<Gauge className="w-4 h-4 text-cyan-400" />}>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Toggle label="تفعيل التخزين المؤقت الآمن للقراءات" checked={security.cacheEnabled} onChange={v=>setSecurity(p=>({...p,cacheEnabled:v}))} />
-              <Toggle label="تفعيل الأصوات والتنبيهات الخفيفة" checked={security.soundsEnabled} onChange={v=>setSecurity(p=>({...p,soundsEnabled:v}))} />
-              <Toggle label="تفعيل النسخ الاحتياطي المحلي التلقائي" checked={security.autoBackupEnabled} onChange={v=>setSecurity(p=>({...p,autoBackupEnabled:v}))} />
-              <Toggle label="تقليل الحركات والمؤثرات لتحسين السرعة" checked={security.reducedMotion} onChange={v=>setSecurity(p=>({...p,reducedMotion:v}))} />
-            </div>
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
-              <Stat icon={<Zap/>} label="السرعة" value="تحميل متوازي + تحديثات جزئية" />
-              <Stat icon={<Server/>} label="المزامنة" value="Supabase هي قاعدة البيانات الأساسية" />
-              <Stat icon={<HardDriveDownload/>} label="النسخة المحلية" value="مزامنة كل 60 ثانية" />
-            </div>
-            <div className="mt-4 p-4 rounded-xl bg-white/[0.03] border border-white/10 text-xs text-slate-300 leading-6">النسخ المحلي يعمل من خلال Backup Agent على جهاز Windows ويأخذ نسخة من Supabase كل دقيقة عند وجود تغيير، مع إعادة المحاولة عند انقطاع الاتصال. مسار الحفظ الافتراضي: <b className="text-white font-mono">{localBackupPath}</b></div>
-          </Section>
-          <Section title="الأمان" icon={<LockKeyhole className="w-4 h-4 text-rose-400" />}>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <NumberField label="قفل الجلسة بعد عدم النشاط (دقيقة)" value={security.autoLockMinutes} min={5} max={240} onChange={v=>setSecurity(p=>({...p,autoLockMinutes:v}))}/>
-              <NumberField label="مدة الاحتفاظ بالنسخ الاحتياطية (يوم)" value={security.backupRetentionDays} min={1} max={365} onChange={v=>setSecurity(p=>({...p,backupRetentionDays:v}))}/>
-              <Toggle label="طلب تأكيد قبل العمليات الخطرة" checked={security.confirmDangerousActions} onChange={v=>setSecurity(p=>({...p,confirmDangerousActions:v}))}/>
-            </div>
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs"><Stat icon={<ShieldCheck/>} label="الجلسة" value={`قفل تلقائي بعد ${security.autoLockMinutes} دقيقة`} /><Stat icon={<Gauge/>} label="الأداء" value={security.reducedMotion ? 'حركات مخففة' : 'الوضع العادي'} /><Stat icon={<HardDrive/>} label="النسخ" value={security.autoBackupEnabled ? `تلقائي / ${security.backupRetentionDays} يوم` : 'يدوي'} /></div>
-            <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-200">لا يتم عرض كلمات المرور أو مفاتيح Supabase في الواجهة. بيانات الدخول تُرسل للخادم فقط، وتحديث الجلسة يتم عبر مسار المصادقة.</div>
-          </Section>
-        </>}
-
-        {tab === 'backup' && <>
-          <Section title="النسخ الاحتياطي والاسترجاع" icon={<HardDrive className="w-4 h-4 text-blue-400" />}>
-          <Section title="Excel Online / OneDrive — الربط الحقيقي" icon={<Server className="w-4 h-4 text-sky-400" />}>
-            <div className="p-4 rounded-xl bg-sky-500/10 border border-sky-500/20 text-xs text-sky-100 leading-6">
-              هذا هو الربط السحابي الحقيقي: حساب Microsoft يتم تسجيله من Microsoft نفسها، وملف <b>.xlsx</b> يُحفظ داخل OneDrive. النظام يستطيع إنشاء الملف، اختياره، تنزيله للجهاز، رفع نسخة منه، والمزامنة مع Supabase. لا تكتب كلمة مرور Microsoft داخل IFC.
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Field label="إيميل Microsoft / Excel"><input value={excelEmail} onChange={e=>setExcelEmail(e.target.value)} placeholder="example@outlook.com" dir="ltr" /></Field>
-              <div className="flex items-end gap-2"><button type="button" onClick={connectExcelCloud} className="btn-blue flex-1"><KeyRound className="w-4 h-4"/> ربط / تغيير حساب Microsoft</button></div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-              <Stat icon={<Database/>} label="حساب Microsoft" value={excelCloud.connected ? (excelCloud.email || 'متصل') : 'غير مربوط'} />
-              <Stat icon={<FileText/>} label="ملف Excel" value={excelCloud.workbook?.name || 'لم يتم اختيار ملف'} />
-              <Stat icon={<RefreshCw/>} label="آخر مزامنة" value={excelCloud.lastSyncedAt ? new Date(excelCloud.lastSyncedAt).toLocaleString('ar-EG') : 'لم تتم بعد'} />
-              <Stat icon={<ShieldCheck/>} label="المصدر الأساسي" value="Supabase" />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-              <button type="button" disabled={!excelCloud.connected} onClick={loadExcelWorkbooks} className="btn-blue"><RefreshCw className="w-4 h-4"/> اختيار ملف Excel</button>
-              <button type="button" disabled={!excelCloud.connected} onClick={createExcelCloud} className="btn-green"><FileText className="w-4 h-4"/> إنشاء ملف الأكاديمية</button>
-              <button type="button" disabled={!excelCloud.workbook} onClick={syncExcelCloudNow} className="btn-blue"><RefreshCw className="w-4 h-4"/> مزامنة الآن</button>
-              <button type="button" disabled={!excelCloud.workbook} onClick={downloadExcelCloud} className="btn-blue"><Download className="w-4 h-4"/> تنزيل Excel للجهاز</button>
-              <button type="button" disabled={!excelCloud.workbook} onClick={()=>excelUploadRef.current?.click()} className="btn-green"><Upload className="w-4 h-4"/> رفع Excel من الجهاز</button>
-              <button type="button" disabled={!excelCloud.connected} onClick={async()=>{try{await disconnectExcelOnlineApi();setExcelCloud({connected:false});setExcelWorkbooks([]);showToast('success','تم فصل Microsoft Excel','يمكنك ربط حساب آخر في أي وقت.')}catch(e:any){showToast('error','تعذر الفصل',e?.message)}}} className="btn-gray"><AlertTriangle className="w-4 h-4"/> فصل الحساب</button>
-            </div>
-            <input ref={excelUploadRef} type="file" accept=".xlsx" className="hidden" onChange={e=>uploadExcelCloud(e.target.files?.[0])} />
-            {excelWorkbooks.length > 0 && <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-56 overflow-auto p-1">{excelWorkbooks.map((file:any)=><button key={file.id} type="button" onClick={async()=>{try{await selectExcelOnlineWorkbook(file.id);await refreshExcelCloud();setExcelWorkbooks([]);showToast('success','تم اختيار ملف Excel',file.name)}catch(e:any){showToast('error','تعذر اختيار الملف',e?.message)}}} className="text-right p-3 rounded-xl bg-white/[0.04] border border-white/10 hover:border-sky-400/40"><div className="text-xs font-black text-white">{file.name}</div><div className="text-[10px] text-slate-500 mt-1">{file.size ? `${Math.round(file.size/1024)} KB` : ''}</div></button>)}</div>}
-          </Section>
-
-          <Section title="Excel محلي — اختياري" icon={<RefreshCw className="w-4 h-4 text-emerald-400" />}>
-            <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-100 leading-6">
-              هذا الربط المحلي اختياري فقط. الربط الأساسي الموصى به الآن هو Excel Online / OneDrive بالأعلى. يمكنك استخدام هذا الخيار كملف محلي على نفس الجهاز. في أوراق منفصلة، ويقرأ التعديلات الخارجية ويكتب تغييرات النظام تلقائيًا كل 30 ثانية. عند وجود تعديل من الطرفين في نفس الوقت، المزامنة تتوقف بدل ما تعمل لخبطة أو تستبدل بيانات.
-            </div>
+        {tab === 'data' && <>
+          <Section title="البيانات والنسخ الاحتياطي" icon={<HardDrive className="w-4 h-4 text-blue-400" />}>
+            <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20 text-xs text-blue-100 leading-6">من هنا تدير كل ملفات البيانات. <b>استيراد البيانات</b> لإضافة بيانات من Excel، <b>تصدير البيانات</b> لإنشاء نسخة كاملة، و<b>استعادة البيانات</b> لإرجاع نسخة محفوظة. النسخ التلقائي يحافظ على نسخة محلية عند تشغيل Windows.</div>
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={importData}/>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <button type="button" onClick={connectAutoExcel} className="btn-green"><RefreshCw className="w-4 h-4"/> {excelSync.connected ? 'إعادة ربط ملف Excel' : 'ربط Excel تلقائيًا'}</button>
-              {excelSync.connected && <button type="button" onClick={requestExcelPermission} className="btn-blue"><CheckCircle className="w-4 h-4"/> السماح بالمزامنة</button>}
-              {excelSync.connected && <button type="button" onClick={disconnectAutoExcel} className="btn-gray"><AlertTriangle className="w-4 h-4"/> فصل Excel</button>}
+              <button type="button" disabled={importing} onClick={()=>fileInputRef.current?.click()} className="p-4 rounded-xl bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/25 text-emerald-200 font-bold text-xs flex items-center gap-3 disabled:opacity-50"><Upload className="w-5 h-5"/>{importing?'جاري الاستيراد...':'استيراد بيانات'}</button>
+              <button type="button" onClick={onExportAllData} className="p-4 rounded-xl bg-blue-600/15 hover:bg-blue-600/25 border border-blue-500/25 text-blue-200 font-bold text-xs flex items-center gap-3"><Download className="w-5 h-5"/> تصدير بيانات</button>
+              <button type="button" disabled={importing} onClick={chooseRestore} className="p-4 rounded-xl bg-amber-600/15 hover:bg-amber-600/25 border border-amber-500/25 text-amber-200 font-bold text-xs flex items-center gap-3 disabled:opacity-50"><RotateCcw className="w-5 h-5"/> استعادة بيانات</button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-              <Stat icon={<Database/>} label="الحالة" value={excelSync.connected ? `متصل: ${excelSync.fileName || 'Excel'}` : 'غير مربوط'} />
-              <Stat icon={<RefreshCw/>} label="الدورة" value="كل 30 ثانية عند التغيير" />
-              <Stat icon={<ShieldCheck/>} label="التعارض" value={excelSync.error?.startsWith('تعارض') ? 'موقوف للحماية' : 'حماية تلقائية'} />
-            </div>
-            {excelSync.error && <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-200 leading-6">{excelSync.error}</div>}
-            {excelSync.lastImportAt && <div className="text-[11px] text-slate-500">آخر استيراد تلقائي: {new Date(excelSync.lastImportAt).toLocaleString('ar-EG')}</div>}
-            {excelSync.lastExportAt && <div className="text-[11px] text-slate-500">آخر تصدير تلقائي: {new Date(excelSync.lastExportAt).toLocaleString('ar-EG')}</div>}
           </Section>
-
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={importBackup}/>
+          <Section title="النسخ الاحتياطي التلقائي" icon={<HardDriveDownload className="w-4 h-4 text-emerald-400" />}>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <button type="button" onClick={onExportAllData} className="p-4 rounded-xl bg-blue-600/15 hover:bg-blue-600/25 border border-blue-500/25 text-blue-200 font-bold text-xs flex items-center gap-3"><Download className="w-5 h-5"/> تصدير نسخة كاملة Excel</button>
-              <button type="button" onClick={()=>fileInputRef.current?.click()} className="p-4 rounded-xl bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/25 text-emerald-200 font-bold text-xs flex items-center gap-3"><Upload className="w-5 h-5"/> استرجاع نسخة Excel</button>
+              <Toggle label="تفعيل النسخ الاحتياطي المحلي التلقائي" checked={performance.autoBackupEnabled} onChange={v=>setPerformance(p=>({...p,autoBackupEnabled:v}))}/>
+              <NumberField label="مدة الاحتفاظ بالنسخ الاحتياطية (يوم)" value={performance.backupRetentionDays} min={1} max={365} onChange={v=>setPerformance(p=>({...p,backupRetentionDays:v}))}/>
             </div>
-            <div className="mt-4 p-4 rounded-xl bg-white/[0.03] border border-white/10 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-xs text-slate-300"><Stat icon={<Database/>} label="البيانات" value="لاعبين + مدربين + حضور + مالية"/><Stat icon={<RefreshCw/>} label="المزامنة" value="كل 60 ثانية عند التغيير"/><Stat icon={<HardDrive/>} label="المجلد" value="C:\\IFC_ACADEMY_DATA"/><Stat icon={<ShieldCheck/>} label="الحماية" value="مفتاح Supabase السري محلي فقط"/></div>
-            <div className="mt-3 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-200 leading-6">ملف Excel يعمل كمرآة تلقائية كاملة لبيانات الأكاديمية، بالإضافة إلى كونه خيارًا للاستيراد والاسترجاع للمستخدم. أما النسخة التلقائية كل دقيقة فتُحفظ محليًا كبيانات تشغيلية داخل <b>Latest</b> مع نسخة يومية داخل <b>Backups</b>.</div>
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs"><Stat icon={<Database/>} label="البيانات" value="لاعبين + مدربين + حضور + مالية"/><Stat icon={<HardDrive/>} label="المجلد" value="C:\\IFC_ACADEMY_DATA"/><Stat icon={<Clock3/>} label="الاحتفاظ" value={`${performance.backupRetentionDays} يوم`}/></div>
+            <p className="mt-3 text-[11px] text-slate-500 leading-6">قبل الاستعادة أو العمليات الخطرة، يفضل وجود نسخة احتياطية حديثة. النسخ المحلية لا تستبدل Supabase كمصدر مركزي للبيانات.</p>
           </Section>
-          <Section title="دورة الشهر" icon={<Clock3 className="w-4 h-4 text-amber-400" />}>
-            <p className="text-xs text-slate-400">أرشفة بيانات الشهر وإطلاق دورة شهر جديدة مع الحفاظ على السجل التاريخي.</p>
-            <button type="button" onClick={onStartNewMonth} className="btn-amber mt-3"><RefreshCw className="w-4 h-4"/> بدء دورة شهر جديدة</button>
-          </Section>
-          <Section title="منطقة خطرة" icon={<AlertTriangle className="w-4 h-4 text-rose-400" />}>
-            <button type="button" onClick={()=>setIsResetConfirmOpen(true)} className="btn-danger"><Trash2 className="w-4 h-4"/> تصفير بيانات الأكاديمية</button>
-          </Section>
+          <Section title="دورة الشهر" icon={<Clock3 className="w-4 h-4 text-amber-400" />}><p className="text-xs text-slate-400">أرشفة بيانات الشهر وإطلاق دورة شهر جديدة مع الحفاظ على السجل التاريخي.</p><button type="button" onClick={onStartNewMonth} className="btn-amber mt-3"><RefreshCw className="w-4 h-4"/> بدء دورة شهر جديدة</button></Section>
+          <Section title="منطقة خطرة" icon={<AlertTriangle className="w-4 h-4 text-rose-400" />}><p className="text-xs text-slate-400">استخدم التصفير فقط بعد التأكد من وجود نسخة احتياطية.</p><button type="button" onClick={()=>setIsResetConfirmOpen(true)} className="btn-danger"><Trash2 className="w-4 h-4"/> تصفير بيانات الأكاديمية</button></Section>
         </>}
+
+        {tab === 'system' && <>
+          <Section title="حالة النظام والمزامنة والأداء والتحديث" icon={<Activity className="w-4 h-4 text-cyan-400" />}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Toggle label="تفعيل التخزين المؤقت الآمن للقراءات" checked={performance.cacheEnabled} onChange={v=>setPerformance(p=>({...p,cacheEnabled:v}))}/>
+              <Toggle label="تفعيل الأصوات والتنبيهات الخفيفة" checked={performance.soundsEnabled} onChange={v=>setPerformance(p=>({...p,soundsEnabled:v}))}/>
+              <Toggle label="تقليل الحركات والمؤثرات لتحسين السرعة" checked={performance.reducedMotion} onChange={v=>setPerformance(p=>({...p,reducedMotion:v}))}/>
+            </div>
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-3"><Stat icon={<Zap/>} label="الأداء" value="تحميل تدريجي وتحديثات جزئية"/><Stat icon={<Server/>} label="السحابة" value="Supabase + Railway API"/><Stat icon={<HardDriveDownload/>} label="الوضع المحلي" value="SQLite + Sync Queue"/><Stat icon={<RefreshCw/>} label="التحديث" value="تلقائي على Windows"/></div>
+            <div className="mt-4 p-4 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-100 leading-6"><b>الإصدار الحالي:</b> V15. النظام يتحقق من التحديثات تلقائيًا عند تشغيل نسخة Windows وعند عودة الإنترنت. استيراد وتصدير البيانات يتمان من قسم البيانات والنسخ فقط.</div>
+          </Section>
+          <SystemCenter />
+        </>}
+
+        {tab === 'account' && <Section title="بيانات الدخول" icon={<KeyRound className="w-4 h-4 text-amber-400" />}>
+          <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-100 leading-6">إعدادات المستخدم الحالي فقط. لا يوجد نظام صلاحيات متعدد المستخدمين.</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4"><Field label="اسم المستخدم الجديد"><input autoComplete="username" value={loginUsername} onChange={e=>setLoginUsername(e.target.value)}/></Field><div/><Field label="كلمة المرور الجديدة"><input type="password" autoComplete="new-password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="6 أحرف/أرقام على الأقل"/></Field><Field label="تأكيد كلمة المرور"><input type="password" autoComplete="new-password" value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)}/></Field></div>
+          <div className="flex items-center justify-end gap-3 pt-2"><button type="button" onClick={()=>{setLoginUsername(currentUsername||'admin');setNewPassword('');setConfirmPassword('')}} className="btn-gray">إلغاء</button><button type="button" disabled={savingCredentials} onClick={saveCredentials} className="btn-blue disabled:opacity-50">{savingCredentials?<RefreshCw className="w-4 h-4 animate-spin"/>:<Save className="w-4 h-4"/>}{savingCredentials?'جاري الحفظ...':'حفظ بيانات الدخول'}</button></div>
+        </Section>}
 
         <div className="flex items-center justify-end gap-3 pt-1">
           {savedSuccess && <span className="text-xs text-emerald-400 font-bold flex items-center gap-1"><CheckCircle className="w-4 h-4"/> تم حفظ الإعدادات</span>}
@@ -526,7 +303,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
 const Section: React.FC<{title:string;icon:React.ReactNode;children:React.ReactNode}> = ({title,icon,children}) => <div className="bg-white/[0.04] border border-white/10 rounded-2xl p-5 shadow-xl shadow-black/10 space-y-4"><div className="flex items-center gap-2 border-b border-white/10 pb-3"><span>{icon}</span><h3 className="text-sm font-black text-white">{title}</h3></div>{children}</div>;
 const Field: React.FC<{label:string;children:React.ReactNode}> = ({label,children}) => <label className="block"><span className="block text-xs text-slate-300 mb-1.5 font-bold">{label}</span>{children}</label>;
-const NumberField: React.FC<{label:string;value:number;min:number;max:number;onChange:(v:number)=>void}> = ({label,value,min,max,onChange}) => <Field label={label}><input type="number" min={min} max={max} value={value} onChange={e=>onChange(Math.max(min,Math.min(max,Number(e.target.value)||min)))} /></Field>;
-const ColorField: React.FC<{label:string;value:string;onChange:(v:string)=>void}> = ({label,value,onChange}) => <Field label={label}><div className="flex gap-2"><input type="color" value={value} onChange={e=>onChange(e.target.value)} className="!w-12 !p-1 h-10"/><input value={value} onChange={e=>onChange(e.target.value)} /></div></Field>;
 const Toggle: React.FC<{label:string;checked:boolean;onChange:(v:boolean)=>void}> = ({label,checked,onChange}) => <label className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/10 cursor-pointer"><input type="checkbox" checked={checked} onChange={e=>onChange(e.target.checked)} className="w-4 h-4"/><span className="text-xs font-bold text-slate-200">{label}</span></label>;
+const NumberField: React.FC<{label:string;value:number;min:number;max:number;onChange:(v:number)=>void}> = ({label,value,min,max,onChange}) => <Field label={label}><input type="number" min={min} max={max} value={value} onChange={e=>onChange(Math.min(max,Math.max(min,Number(e.target.value)||min)))} /></Field>;
+const ColorField: React.FC<{label:string;value:string;onChange:(v:string)=>void}> = ({label,value,onChange}) => <Field label={label}><div className="flex gap-2"><input type="color" value={value} onChange={e=>onChange(e.target.value)} className="w-12 h-10 p-1 cursor-pointer"/><input value={value} onChange={e=>onChange(e.target.value)} dir="ltr"/></div></Field>;
 const Stat: React.FC<{icon:React.ReactNode;label:string;value:string}> = ({icon,label,value}) => <div className="p-3 rounded-xl bg-white/[0.03] border border-white/10"><div className="text-blue-400 mb-1">{icon}</div><div className="text-[10px] text-slate-500">{label}</div><div className="text-xs font-bold text-white mt-1">{value}</div></div>;

@@ -234,7 +234,6 @@ as $$
 declare
   deleted jsonb;
 begin
-  -- All IFC write/reset operations share this transaction-level advisory lock.
   perform pg_advisory_xact_lock(48291731);
 
   select jsonb_build_object(
@@ -254,35 +253,13 @@ begin
     public.coaches,
     public.monthly_archives;
 
-  insert into public.academy_settings (
-    id, data_epoch, academy_name, logo_text, phone, email, address, currency, current_season,
-    whatsapp_notifications_enabled, sms_alerts_enabled, custom_logo_url,
-    color_theme, primary_color, background_color, navbar_color, desktop_notifications_enabled
-  ) values (
-    1,
-    coalesce((select data_epoch from public.academy_settings where id = 1), 0) + 1,
-    'أكاديمية IFC للفنون القتالية والكيك بوكسينغ',
-    'IFC ACADEMY', '', '', '', 'ج.م', '', true, false, '',
-    'classic-blue', '#2563eb', '#020617', '#0b1120', true
-  )
-  on conflict (id) do update set
-    data_epoch = excluded.data_epoch,
-    academy_name = excluded.academy_name,
-    logo_text = excluded.logo_text,
-    phone = excluded.phone,
-    email = excluded.email,
-    address = excluded.address,
-    currency = excluded.currency,
-    current_season = excluded.current_season,
-    whatsapp_notifications_enabled = excluded.whatsapp_notifications_enabled,
-    sms_alerts_enabled = excluded.sms_alerts_enabled,
-    custom_logo_url = excluded.custom_logo_url,
-    color_theme = excluded.color_theme,
-    primary_color = excluded.primary_color,
-    background_color = excluded.background_color,
-    navbar_color = excluded.navbar_color,
-    desktop_notifications_enabled = excluded.desktop_notifications_enabled,
-    updated_at = now();
+  update public.academy_settings
+     set data_epoch = coalesce(data_epoch, 0) + 1, updated_at = now()
+   where id = 1;
+
+  if not found then
+    insert into public.academy_settings(id, data_epoch) values (1, 2);
+  end if;
 
   return jsonb_build_object('success', true, 'deleted', deleted);
 end;
@@ -375,4 +352,90 @@ grant execute on function public.refresh_current_month_archive(text) to service_
 notify pgrst, 'reload schema';
 
 -- V12.1 compatibility: refresh PostgREST schema after RPC creation.
+notify pgrst, 'reload schema';
+
+
+-- IFC Academy V15 infrastructure upgrade
+-- Non-destructive migration: soft delete/trash, audit trail, idempotency and health telemetry.
+
+alter table public.players add column if not exists deleted_at timestamptz;
+alter table public.coaches add column if not exists deleted_at timestamptz;
+alter table public.payments add column if not exists deleted_at timestamptz;
+alter table public.expenses add column if not exists deleted_at timestamptz;
+alter table public.monthly_archives add column if not exists deleted_at timestamptz;
+
+create index if not exists idx_players_active_member on public.players(member_number) where deleted_at is null;
+create index if not exists idx_players_deleted_at on public.players(deleted_at);
+create index if not exists idx_coaches_deleted_at on public.coaches(deleted_at);
+create index if not exists idx_payments_deleted_at on public.payments(deleted_at);
+create index if not exists idx_expenses_deleted_at on public.expenses(deleted_at);
+create index if not exists idx_archives_deleted_at on public.monthly_archives(deleted_at);
+
+create table if not exists public.audit_logs (
+  id text primary key,
+  action text not null,
+  method text not null,
+  route text not null,
+  status integer not null default 200,
+  user_id uuid,
+  user_name text,
+  request_id text,
+  details jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_audit_logs_created_at on public.audit_logs(created_at desc);
+create index if not exists idx_audit_logs_route on public.audit_logs(route);
+
+create table if not exists public.idempotency_keys (
+  request_id text primary key,
+  route text not null,
+  method text not null,
+  status integer not null default 200,
+  response jsonb,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default (now() + interval '7 days')
+);
+create index if not exists idx_idempotency_expires on public.idempotency_keys(expires_at);
+
+create table if not exists public.sync_operations (
+  id text primary key,
+  request_id text,
+  entity_type text,
+  entity_id text,
+  operation text not null,
+  device_id text,
+  status text not null default 'success',
+  error text,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_sync_operations_created_at on public.sync_operations(created_at desc);
+create index if not exists idx_sync_operations_entity on public.sync_operations(entity_type, entity_id);
+
+create table if not exists public.system_health_events (
+  id text primary key,
+  component text not null,
+  status text not null,
+  message text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_health_events_created_at on public.system_health_events(created_at desc);
+
+-- Clean expired idempotency records opportunistically.
+create or replace function public.cleanup_ifc_v15()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare n integer;
+begin
+  delete from public.idempotency_keys where expires_at < now();
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+revoke all on function public.cleanup_ifc_v15() from public;
+grant execute on function public.cleanup_ifc_v15() to service_role;
+
 notify pgrst, 'reload schema';

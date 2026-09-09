@@ -40,6 +40,8 @@ export interface SessionRecord {
 
 export interface Player {
   id: string;
+  version?: number;
+  updatedAt?: string;
   memberNumber: string | number; // e.g. 'IFC-001', 1001
   name: string;
   nationalId?: string; // الرقم القومي (14 رقم)
@@ -100,6 +102,8 @@ export interface ExpenseRecord {
 
 export interface Coach {
   id: string;
+  version?: number;
+  updatedAt?: string;
   name: string;
   avatarUrl: string;
   role: string; // كابتن كيك بوكسينغ، مدرب لياقة بدنية وكارديو...

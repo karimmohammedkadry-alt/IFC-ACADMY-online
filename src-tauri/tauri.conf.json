@@ -1,18 +1,17 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "IFC Academy",
-  "version": "1.0.0",
+  "version": "15.2.0",
   "identifier": "com.ifc.academy",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run build:web",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "label": "main",
         "title": "IFC Academy",
         "width": 1440,
         "height": 900,
@@ -32,21 +31,30 @@
       "nsis",
       "msi"
     ],
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "Arabic"
+        ]
+      }
+    },
     "icon": [
-      "icons/icon.ico",
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png"
-    ],
-    "resources": [
-      "data/ifc_academy.db"
+      "icons/icon.png",
+      "icons/icon.ico"
     ]
   },
   "plugins": {
-    "sql": {
-      "preload": [
-        "sqlite:ifc_academy.db"
-      ]
+    "updater": {
+      "pubkey": "__TAURI_UPDATE_PUBLIC_KEY__",
+      "endpoints": [
+        "https://github.com/__GITHUB_REPOSITORY__/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

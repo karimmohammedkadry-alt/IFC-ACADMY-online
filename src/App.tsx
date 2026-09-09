@@ -91,8 +91,8 @@ import { SettingsView } from './views/SettingsView';
 import { RefreshCw, Database, AlertTriangle } from 'lucide-react';
 import { SystemToast, SystemToastType } from './components/SystemToast';
 import * as XLSX from 'xlsx';
-import { buildFullExcelWorkbook, connectExcelFile, ensureExcelPermission, restoreExcelHandle, readExcelWorkbook, writeExcelWorkbook, getExcelSyncMeta, markExcelConnected, markExcelDisconnected, markExcelFileHash, markExcelImported, markExcelError } from './utils/excelSync';
-import { getExcelOnlineStatus, syncExcelOnlineApi } from './services/api';
+import { buildFullExcelWorkbook } from './utils/excelSync';
+
 
 const AUTH_SESSION_KEY = 'ifc_auth_session_v2';
 const AUTH_TOKEN_KEY = 'ifc_admin_session_token';
@@ -308,6 +308,17 @@ export default function App() {
       if (!cancelled && (result.remaining || 0) === 0 && localStorage.getItem(AUTH_TOKEN_KEY)) await loadDatabaseData();
     };
     const handleOffline = () => { setIsOnline(false); void refreshSyncState(); };
+    const handleNetworkOnline = async () => {
+      setIsOnline(true);
+      const result = await syncOfflineChanges();
+      if (!cancelled) setPendingSyncCount(result.remaining || 0);
+      if (!cancelled && (result.remaining || 0) === 0 && localStorage.getItem(AUTH_TOKEN_KEY)) await loadDatabaseData();
+    };
+    const handleNetworkOffline = () => { setIsOnline(false); void refreshSyncState(); };
+    const handleUpdateAvailable = (event: Event) => {
+      const version = String((event as CustomEvent).detail?.version || '');
+      showToast('info', 'تحديث جديد للتطبيق', version ? `الإصدار ${version} سيتم تثبيته تلقائيًا.` : 'سيتم تثبيت التحديث تلقائيًا.');
+    };
     const handleSyncComplete = async (event: Event) => {
       const remaining = Number((event as CustomEvent).detail?.remaining || 0);
       setPendingSyncCount(remaining);
@@ -325,11 +336,19 @@ export default function App() {
       setCurrentTab('login');
       showToast('error', 'انتهت جلسة الدخول', 'انتهت جلسة Supabase ولا يمكن تجديدها تلقائياً. يرجى تسجيل الدخول مرة أخرى.');
     };
-    const syncTimer = window.setInterval(() => {
-      if (!cancelled && document.visibilityState === 'visible' && localStorage.getItem(AUTH_TOKEN_KEY)) void loadDatabaseData();
+    const syncTimer = window.setInterval(async () => {
+      if (cancelled || document.visibilityState !== 'visible' || !localStorage.getItem(AUTH_TOKEN_KEY) || isOfflineNowForApp()) return;
+      try {
+        const fingerprint = await fetchServerSyncFingerprint();
+        const previous = localStorage.getItem('ifc_server_sync_fingerprint') || '';
+        if (fingerprint && fingerprint !== previous) await loadDatabaseData();
+      } catch {}
     }, 15000);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    window.addEventListener('ifc-network-online', handleNetworkOnline);
+    window.addEventListener('ifc-network-offline', handleNetworkOffline);
+    window.addEventListener('ifc-update-available', handleUpdateAvailable);
     window.addEventListener('ifc-sync-complete', handleSyncComplete);
     window.addEventListener('ifc-sync-conflict', handleSyncConflict);
     window.addEventListener('ifc-auth-expired', handleAuthExpired);
@@ -385,6 +404,8 @@ export default function App() {
     return () => {
       cancelled = true; window.clearInterval(syncTimer);
       window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('ifc-network-online', handleNetworkOnline); window.removeEventListener('ifc-network-offline', handleNetworkOffline);
+      window.removeEventListener('ifc-update-available', handleUpdateAvailable);
       window.removeEventListener('ifc-sync-complete', handleSyncComplete); window.removeEventListener('ifc-sync-conflict', handleSyncConflict);
       window.removeEventListener('ifc-auth-expired', handleAuthExpired);
     };
@@ -506,8 +527,6 @@ export default function App() {
   // Monthly Archive Modal State & Persistence
   const [isMonthlyArchiveModalOpen, setIsMonthlyArchiveModalOpen] = useState(false);
   const [monthlyArchives, setMonthlyArchives] = useState<MonthlyArchiveRecord[]>([]);
-  const [excelDataRevision, setExcelDataRevision] = useState(0);
-  useEffect(() => { setExcelDataRevision((v) => v + 1); }, [players, payments, expenses, coaches, settings, monthlyArchives]);
 
   // Apply dynamic theme colors to root CSS variables and document body
   useEffect(() => {
@@ -1481,7 +1500,7 @@ export default function App() {
   };
 
   const handleExportAllData = () => {
-    const workbook = buildExcelWorkbookRef.current();
+    const workbook = buildAcademyExcelWorkbook();
     const filename = `نسخة_أكاديمية_IFC_${new Date().toISOString().split('T')[0]}.xlsx`;
     XLSX.writeFile(workbook, filename);
     showToast('success', 'تم تصدير النسخة الاحتياطية', 'تم إنشاء ملف Excel يحتوي على بيانات الأكاديمية في أوراق منفصلة.');
@@ -1531,107 +1550,8 @@ export default function App() {
   };
 
 
-  // Real Excel Online / OneDrive sync controller. Supabase remains authoritative.
-  const excelCloudBusyRef = useRef(false);
-  useEffect(() => {
-    let cancelled = false;
-    const runCloudSync = async () => {
-      if (cancelled || excelCloudBusyRef.current || !localStorage.getItem(AUTH_TOKEN_KEY)) return;
-      excelCloudBusyRef.current = true;
-      try {
-        const status = await getExcelOnlineStatus();
-        if (!status?.connected || !status?.workbook) return;
-        const result = await syncExcelOnlineApi('auto');
-        if (result?.direction === 'excel_to_system' && result?.sheets) {
-          await handleImportAllData(result.sheets);
-          showToast('success', 'تم تحديث النظام من Excel Online', 'تم استيراد التغييرات السحابية إلى Supabase.');
-        } else if (result?.direction === 'conflict') {
-          showToast('error', 'مزامنة Excel متوقفة للحماية', result.message);
-        }
-      } catch (e) {
-        console.warn('Excel Online sync skipped:', e);
-      } finally { excelCloudBusyRef.current = false; }
-    };
-    void runCloudSync();
-    const timer = window.setInterval(() => void runCloudSync(), 30_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [excelDataRevision]);
-
-  // Global Excel auto-sync controller. It remains active on every screen, not only Settings.
-  const excelHandleRef = useRef<FileSystemFileHandle | null>(null);
-  const excelSyncBusyRef = useRef(false);
-  const excelRevisionRef = useRef(excelDataRevision);
-  const excelLastRevisionRef = useRef(-1);
-  const excelLastHashRef = useRef('');
-  const excelPendingHashRef = useRef('');
-  const excelPendingStableRef = useRef(0);
-  const buildExcelWorkbookRef = useRef(buildAcademyExcelWorkbook);
-  const importExcelDataRef = useRef(handleImportAllData);
-  useEffect(() => {
-    excelRevisionRef.current = excelDataRevision;
-    buildExcelWorkbookRef.current = buildAcademyExcelWorkbook;
-    importExcelDataRef.current = handleImportAllData;
-  }, [excelDataRevision, players, payments, expenses, coaches, settings, monthlyArchives]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const restore = async () => {
-      try {
-        const handle = await restoreExcelHandle();
-        if (!cancelled) excelHandleRef.current = handle;
-      } catch (e) { console.warn('Excel auto-sync restore skipped:', e); }
-    };
-    void restore();
-    const onConnected = () => { void restore(); };
-    window.addEventListener('ifc-excel-connected', onConnected);
-    return () => { cancelled = true; window.removeEventListener('ifc-excel-connected', onConnected); };
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setInterval(async () => {
-      if (excelSyncBusyRef.current || !excelHandleRef.current || !localStorage.getItem(AUTH_TOKEN_KEY)) return;
-      const handle = excelHandleRef.current;
-      excelSyncBusyRef.current = true;
-      try {
-        const permission = await (handle as any).queryPermission?.({ mode: 'readwrite' });
-        if (permission !== 'granted') return;
-        const fileState = await readExcelWorkbook(handle);
-        if (excelPendingHashRef.current === fileState.hash) excelPendingStableRef.current += 1;
-        else { excelPendingHashRef.current = fileState.hash; excelPendingStableRef.current = 1; }
-        if (excelPendingStableRef.current < 2) return;
-
-        const knownHash = getExcelSyncMeta().lastFileHash || excelLastHashRef.current;
-        const externalChanged = fileState.hash !== knownHash;
-        const systemChanged = excelRevisionRef.current !== excelLastRevisionRef.current;
-
-        // Never guess when both sides changed: this is the main anti-confusion rule.
-        if (externalChanged && systemChanged) {
-          markExcelError('تعارض: تم تعديل النظام وملف Excel معًا. المزامنة توقفت للحماية. افصل/أعد الربط بعد مراجعة الملف.');
-          return;
-        }
-        if (externalChanged) {
-          await importExcelDataRef.current({ __format: 'ifc-excel-auto-sync-v1', ...fileState.sheets });
-          markExcelImported();
-          markExcelFileHash(fileState.hash);
-          excelLastHashRef.current = fileState.hash;
-          excelLastRevisionRef.current = excelRevisionRef.current;
-          markExcelError('');
-          return;
-        }
-        if (systemChanged) {
-          const workbook = buildExcelWorkbookRef.current();
-          const hash = await writeExcelWorkbook(handle, workbook);
-          markExcelFileHash(hash);
-          excelLastHashRef.current = hash;
-          excelLastRevisionRef.current = excelRevisionRef.current;
-          markExcelError('');
-        }
-      } catch (e) {
-        markExcelError(e instanceof Error ? e.message : 'تعذر مزامنة Excel.');
-      } finally { excelSyncBusyRef.current = false; }
-    }, 30000);
-    return () => window.clearInterval(timer);
-  }, []);
+  // Automatic Excel mirroring is intentionally disabled; Excel is manual import/export only.
+  // Excel remains available only through explicit import/export from Settings.
 
   // Logout handler
   const handleLogout = async () => {
@@ -1899,9 +1819,6 @@ export default function App() {
               isDbConnected={isDbConnected}
               currentUsername={currentUser.username}
               onCredentialsChanged={(username) => setCurrentUser(prev => ({ ...prev, username }))}
-              excelDataRevision={excelDataRevision}
-              buildExcelWorkbook={buildAcademyExcelWorkbook}
-              onAutoImportExcel={handleImportAllData}
             />
           )}
         </main>

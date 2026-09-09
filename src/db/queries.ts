@@ -14,6 +14,15 @@ function fail(label: string, error: any): never {
   throw new Error(`${label} failed: ${error?.message || 'Supabase error'}`, { cause: error });
 }
 
+export class SyncConflictError extends Error {
+  status = 409;
+  code = 'SYNC_CONFLICT';
+  constructor(message: string, public entityType: string, public entityId: string, public serverData?: any) {
+    super(message);
+    this.name = 'SyncConflictError';
+  }
+}
+
 async function single<T>(table: string, id = 1): Promise<T | null> {
   const { data, error } = await supabaseServer.from(table).select('*').eq('id', id).maybeSingle();
   if (error) fail(`read ${table}`, error);
@@ -66,6 +75,8 @@ function mapSession(s: any): SessionRecord {
 function mapPlayer(p: any, sessions: SessionRecord[]): Player {
   return {
     id: p.id,
+    version: p.version ?? undefined,
+    updatedAt: p.updated_at || undefined,
     memberNumber: p.member_number,
     name: p.name,
     nationalId: p.national_id || '',
@@ -95,7 +106,7 @@ function mapPlayer(p: any, sessions: SessionRecord[]): Player {
 
 export async function getPlayers(): Promise<Player[]> {
   const [{ data: ps, error: pe }, { data: ss, error: se }] = await Promise.all([
-    supabaseServer.from('players').select('*').order('member_number', { ascending: true }),
+    supabaseServer.from('players').select('*').is('deleted_at', null).order('member_number', { ascending: true }),
     supabaseServer.from('player_sessions').select('*').order('session_number', { ascending: true }),
   ]);
   if (pe) fail('get players', pe);
@@ -208,6 +219,8 @@ export async function createPlayer(playerData: Player): Promise<Player> {
 }
 
 export async function updatePlayer(id: string, updates: Partial<Player>): Promise<void> {
+  const baseVersionRaw = (updates as any)?._ifc_base_version;
+  const baseVersion = Number.isFinite(Number(baseVersionRaw)) ? Number(baseVersionRaw) : null;
   const payload: any = {};
   const map: Record<string, keyof Player> = {
     name: 'name', member_number: 'memberNumber', national_id: 'nationalId', payment_method: 'paymentMethod',
@@ -230,7 +243,14 @@ export async function updatePlayer(id: string, updates: Partial<Player>): Promis
   }
 
   for (let attempt = 0; attempt < 3; attempt++) {
-    const { error } = await supabaseServer.from('players').update(payload).eq('id', id);
+    let query = supabaseServer.from('players').update(payload).eq('id', id);
+    if (baseVersion !== null) query = query.eq('version', baseVersion);
+    const { data: updatedRows, error } = await query.select('*');
+    if (!error && updatedRows && updatedRows.length > 0) break;
+    if (!error && (!updatedRows || updatedRows.length === 0) && baseVersion !== null) {
+      const { data: serverRow } = await supabaseServer.from('players').select('*').eq('id', id).maybeSingle();
+      throw new SyncConflictError('تم تعديل اللاعب من جهاز آخر. راجع التعارض قبل الكتابة فوق التعديل.', 'player', id, serverRow);
+    }
     if (!error) break;
     if (error.code === '23505' && String(error.message || '').toLowerCase().includes('member_number')) {
       payload.member_number = await getNextMemberNumber();
@@ -256,9 +276,15 @@ export async function updatePlayer(id: string, updates: Partial<Player>): Promis
   }
 }
 
-export async function deletePlayer(id: string): Promise<void> {
-  const { error } = await supabaseServer.from('players').delete().eq('id', id);
-  if (error) fail('delete player', error);
+export async function deletePlayer(id: string, baseVersion?: number | null): Promise<void> {
+  let query = supabaseServer.from('players').update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id);
+  if (baseVersion !== null && baseVersion !== undefined && Number.isFinite(Number(baseVersion))) query = query.eq('version', Number(baseVersion));
+  const { data, error } = await query.select('id,version,deleted_at').maybeSingle();
+  if (error) fail('trash player', error);
+  if (!data && baseVersion !== null && baseVersion !== undefined) {
+    const { data: serverRow } = await supabaseServer.from('players').select('*').eq('id', id).maybeSingle();
+    throw new SyncConflictError('تم تغيير اللاعب من جهاز آخر قبل الحذف.', 'player', id, serverRow);
+  }
 }
 
 export async function updateSessionAttendance(sessionId: string, playerId: string, status: 'حاضر' | 'غائب' | 'بعذر', notes?: string, sessionDate?: string): Promise<void> {
@@ -402,7 +428,7 @@ export async function bulkImportCoaches(coaches: Coach[]) {
 
 // ----------------- PAYMENTS -----------------
 export async function getPayments(): Promise<PaymentRecord[]> {
-  const { data, error } = await supabaseServer.from('payments').select('*').order('created_at', { ascending: false });
+  const { data, error } = await supabaseServer.from('payments').select('*').is('deleted_at', null).order('created_at', { ascending: false });
   if (error) fail('get payments', error);
   return (data || []).map((p) => ({
     id: p.id, invoiceNumber: p.invoice_number, type: p.type || 'اشتراك لاعب', playerId: p.player_id || undefined,
@@ -429,11 +455,11 @@ export async function createPayment(pay: PaymentRecord): Promise<PaymentRecord> 
   }
   throw new Error('تعذر إنشاء رقم إيصال فريد بعد عدة محاولات.');
 }
-export async function deletePayment(id: string): Promise<void> { const { error } = await supabaseServer.from('payments').delete().eq('id', id); if (error) fail('delete payment', error); }
+export async function deletePayment(id: string): Promise<void> { const { error } = await supabaseServer.from('payments').update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id); if (error) fail('trash payment', error); }
 
 // ----------------- EXPENSES -----------------
 export async function getExpenses(): Promise<ExpenseRecord[]> {
-  const { data, error } = await supabaseServer.from('expenses').select('*').order('created_at', { ascending: false });
+  const { data, error } = await supabaseServer.from('expenses').select('*').is('deleted_at', null).order('created_at', { ascending: false });
   if (error) fail('get expenses', error);
   return (data || []).map((e) => ({ id: e.id, title: e.title, category: e.category || 'أخرى', amount: e.amount, date: e.date, paidTo: e.paid_to, coachId: e.coach_id || undefined, method: e.method || 'كاش', notes: e.notes || '' }));
 }
@@ -448,13 +474,13 @@ export async function createExpense(exp: ExpenseRecord): Promise<ExpenseRecord> 
   }
   throw new Error('تعذر إنشاء رقم مصروف فريد بعد عدة محاولات.');
 }
-export async function deleteExpense(id: string): Promise<void> { const { error } = await supabaseServer.from('expenses').delete().eq('id', id); if (error) fail('delete expense', error); }
+export async function deleteExpense(id: string): Promise<void> { const { error } = await supabaseServer.from('expenses').update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id); if (error) fail('trash expense', error); }
 
 // ----------------- COACHES -----------------
 export async function getCoaches(): Promise<Coach[]> {
-  const { data, error } = await supabaseServer.from('coaches').select('*').order('name', { ascending: true });
+  const { data, error } = await supabaseServer.from('coaches').select('*').is('deleted_at', null).order('name', { ascending: true });
   if (error) fail('get coaches', error);
-  return (data || []).map((c) => ({ id: c.id, name: c.name, avatarUrl: c.avatar_url || '', role: c.role, sport: c.sport || 'كيك بوكسينغ', teams: c.teams || [], phone: c.phone || '', monthlySalary: c.monthly_salary ?? 4000, joinDate: c.join_date, status: c.status || 'نشط', sessionsCountThisMonth: c.sessions_count_this_month ?? 0, lastSalaryPaidMonth: c.last_salary_paid_month || undefined }));
+  return (data || []).map((c) => ({ id: c.id, version: c.version ?? undefined, updatedAt: c.updated_at || undefined, name: c.name, avatarUrl: c.avatar_url || '', role: c.role, sport: c.sport || 'كيك بوكسينغ', teams: c.teams || [], phone: c.phone || '', monthlySalary: c.monthly_salary ?? 4000, joinDate: c.join_date, status: c.status || 'نشط', sessionsCountThisMonth: c.sessions_count_this_month ?? 0, lastSalaryPaidMonth: c.last_salary_paid_month || undefined }));
 }
 export async function createCoach(c: Coach): Promise<Coach> {
   let id = c.id || `coach-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -467,11 +493,21 @@ export async function createCoach(c: Coach): Promise<Coach> {
   }
   throw new Error('تعذر إنشاء معرف مدرب فريد بعد عدة محاولات.');
 }
-export async function updateCoach(id: string, u: Partial<Coach>): Promise<void> {
+export async function updateCoach(id: string, u: Partial<Coach>): Promise<any> {
+  const baseVersionRaw = (u as any)?._ifc_base_version;
+  const baseVersion = Number.isFinite(Number(baseVersionRaw)) ? Number(baseVersionRaw) : null;
   const p: any = {}; if (u.name !== undefined) p.name = u.name; if (u.avatarUrl !== undefined) p.avatar_url = u.avatarUrl; if (u.role !== undefined) p.role = u.role; if (u.sport !== undefined) p.sport = u.sport; if (u.phone !== undefined) p.phone = u.phone; if (u.monthlySalary !== undefined) p.monthly_salary = u.monthlySalary; if (u.joinDate !== undefined) p.join_date = u.joinDate; if (u.status !== undefined) p.status = u.status; if (u.teams !== undefined) p.teams = u.teams; if (u.sessionsCountThisMonth !== undefined) p.sessions_count_this_month = u.sessionsCountThisMonth; if (u.lastSalaryPaidMonth !== undefined) p.last_salary_paid_month = u.lastSalaryPaidMonth; p.updated_at = new Date().toISOString();
-  const { error } = await supabaseServer.from('coaches').update(p).eq('id', id); if (error) fail('update coach', error);
+  let query = supabaseServer.from('coaches').update(p).eq('id', id);
+  if (baseVersion !== null) query = query.eq('version', baseVersion);
+  const { data, error } = await query.select('*').maybeSingle();
+  if (error) fail('update coach', error);
+  if (!data && baseVersion !== null) {
+    const { data: serverRow } = await supabaseServer.from('coaches').select('*').eq('id', id).maybeSingle();
+    throw new SyncConflictError('تم تعديل المدرب من جهاز آخر. راجع التعارض قبل الكتابة فوق التعديل.', 'coach', id, serverRow);
+  }
+  return data as any;
 }
-export async function deleteCoach(id: string): Promise<void> { const { error } = await supabaseServer.from('coaches').delete().eq('id', id); if (error) fail('delete coach', error); }
+export async function deleteCoach(id: string, baseVersion?: number | null): Promise<void> { let query = supabaseServer.from('coaches').update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id); if (baseVersion !== null && baseVersion !== undefined && Number.isFinite(Number(baseVersion))) query = query.eq('version', Number(baseVersion)); const { data, error } = await query.select('id,version,deleted_at').maybeSingle(); if (error) fail('trash coach', error); if (!data && baseVersion !== null && baseVersion !== undefined) { const { data: serverRow } = await supabaseServer.from('coaches').select('*').eq('id', id).maybeSingle(); throw new SyncConflictError('تم تغيير المدرب من جهاز آخر قبل الحذف.', 'coach', id, serverRow); } }
 
 
 export async function getAcademyDataEpoch(): Promise<number> {
@@ -529,7 +565,7 @@ export async function updateSettings(s: AcademySettings): Promise<AcademySetting
 
 // ----------------- MONTHLY ARCHIVES -----------------
 export async function getMonthlyArchives(): Promise<MonthlyArchiveRecord[]> {
-  const { data, error } = await supabaseServer.from('monthly_archives').select('*').order('month_key', { ascending: false });
+  const { data, error } = await supabaseServer.from('monthly_archives').select('*').is('deleted_at', null).order('month_key', { ascending: false });
   if (error) fail('get monthly archives', error);
   return (data || []).map((a) => ({
     id: a.id,
@@ -622,4 +658,4 @@ export async function refreshCurrentMonthArchive(archivedBy = 'المدير ال
   return archive;
 }
 
-export async function deleteMonthlyArchive(id: string): Promise<void> { const { error } = await supabaseServer.from('monthly_archives').delete().eq('id', id); if (error) fail('delete monthly archive', error); }
+export async function deleteMonthlyArchive(id: string): Promise<void> { const { error } = await supabaseServer.from('monthly_archives').update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', id); if (error) fail('delete monthly archive', error); }

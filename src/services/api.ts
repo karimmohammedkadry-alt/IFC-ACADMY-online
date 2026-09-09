@@ -1,10 +1,18 @@
 import { Player, PaymentRecord, ExpenseRecord, Coach, AcademySettings, MonthlyArchiveRecord } from '../types.ts';
-import { getLocalSnapshot, setLocalSnapshot, removeLocalSnapshot, clearLocalSnapshots, enqueueMutation, getQueuedMutations, removeQueuedMutation, saveSyncConflict, getQueuedMutationCount } from './offlineStore.ts';
+import { IFC_API_BASE_URL } from '../generated/runtimeConfig.ts';
+import { getLocalSnapshot, setLocalSnapshot, removeLocalSnapshot, clearLocalSnapshots, enqueueMutation, getQueuedMutations, removeQueuedMutation, saveSyncConflict, getQueuedMutationCount, markQueuedMutation } from './offlineStore.ts';
 
 const AUTH_TOKEN_KEY = 'ifc_admin_session_token';
 const REFRESH_TOKEN_KEY = 'ifc_admin_refresh_token';
 const AUTH_SESSION_KEY = 'ifc_auth_session_v2';
 const CACHE_PREFIX = 'ifc_cache_v4:';
+const API_BASE_URL = String(IFC_API_BASE_URL || '').replace(/\/$/, '');
+
+function apiUrl(input: RequestInfo | URL): RequestInfo | URL {
+  if (typeof input === 'string' && input.startsWith('/api/')) return `${API_BASE_URL}${input}`;
+  if (input instanceof URL && input.pathname.startsWith('/api/')) return new URL(`${API_BASE_URL}${input.pathname}${input.search}`);
+  return input;
+}
 
 class AuthExpiredError extends Error {
   constructor(message = 'انتهت جلسة الدخول. يرجى تسجيل الدخول مرة أخرى.') {
@@ -16,6 +24,19 @@ class AuthExpiredError extends Error {
 let refreshInFlight: Promise<string> | null = null;
 
 const LOCAL_KEYS = ['players', 'payments', 'expenses', 'coaches', 'settings', 'archives'];
+const DEVICE_ID_KEY = 'ifc_device_id_v1';
+
+function getDeviceId(): string {
+  try {
+    const existing = localStorage.getItem(DEVICE_ID_KEY);
+    if (existing) return existing;
+    const id = `ifc-${crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`}`;
+    localStorage.setItem(DEVICE_ID_KEY, id);
+    return id;
+  } catch {
+    return 'ifc-unknown-device';
+  }
+}
 let syncInFlight: Promise<{ synced: number; remaining: number; blocked?: boolean }> | null = null;
 
 function isOfflineNow() {
@@ -43,6 +64,13 @@ async function mutateLocal<T>(key: string, updater: (current: T | null) => T): P
   const next = updater(current);
   await setLocalSnapshot(key, next);
   return next;
+}
+
+async function getLocalRecordVersion(key: 'players' | 'coaches', id: string): Promise<number | null> {
+  const rows = await getLocalSnapshot<any[]>(key);
+  const row = (rows || []).find((item) => String(item?.id) === String(id));
+  const version = Number(row?.version);
+  return Number.isFinite(version) && version > 0 ? version : null;
 }
 
 async function queueOfflineMutation(method: string, url: string, body: any, localApply: () => Promise<void>) {
@@ -128,7 +156,13 @@ export async function syncOfflineChanges() {
       }
       if (isOfflineNow()) break;
       try {
-        const headers = new Headers({ 'Content-Type': 'application/json', 'X-IFC-Offline-Mutation': mutation.id });
+        await markQueuedMutation(mutation.id, 'syncing');
+        const headers = new Headers({
+          'Content-Type': 'application/json',
+          'X-IFC-Offline-Mutation': mutation.id,
+          'X-IFC-Request-ID': mutation.id,
+          'X-IFC-Device-ID': getDeviceId(),
+        });
         const res = await authorizedFetch(mutation.url, {
           method: mutation.method,
           headers,
@@ -139,6 +173,7 @@ export async function syncOfflineChanges() {
         synced++;
       } catch (error) {
         if (isNetworkFailure(error)) break;
+        await markQueuedMutation(mutation.id, 'failed', String((error as any)?.message || error || 'فشلت المزامنة'));
         await saveSyncConflict(mutation, error);
         // Keep the failed item at the head of the queue. It must not be silently discarded
         // or replaced by a stale server snapshot.
@@ -177,7 +212,7 @@ async function refreshSessionForApi(): Promise<string> {
   if (!refreshToken) throw new AuthExpiredError();
 
   refreshInFlight = (async () => {
-    const res = await fetch('/api/auth/refresh', {
+    const res = await fetch(apiUrl('/api/auth/refresh'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: refreshToken }),
@@ -199,14 +234,22 @@ async function refreshSessionForApi(): Promise<string> {
   return refreshInFlight;
 }
 
+function makeRequestId() {
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 async function authorizedFetch(input: RequestInfo | URL, init: RequestInit = {}, retry = true): Promise<Response> {
   const headers = new Headers(init.headers || {});
+  const method = String(init.method || 'GET').toUpperCase();
+  if (['POST','PUT','PATCH','DELETE'].includes(method) && !headers.has('X-IFC-Request-ID')) {
+    headers.set('X-IFC-Request-ID', makeRequestId());
+  }
   try {
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
     if (token) headers.set('Authorization', `Bearer ${token}`);
   } catch {}
 
-  const res = await fetch(input, { ...init, headers });
+  const res = await fetch(apiUrl(input), { ...init, headers });
   if (res.status !== 401 || !retry) {
     if (res.status === 401) throw new AuthExpiredError();
     return res;
@@ -271,7 +314,7 @@ async function fetchCachedJson<T>(url: string, cacheKey: string): Promise<T> {
 }
 
 export async function loginAdmin(username: string, password: string) {
-  const res = await fetch('/api/auth/login', {
+  const res = await fetch(apiUrl('/api/auth/login'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
@@ -283,7 +326,7 @@ export async function loginAdmin(username: string, password: string) {
 
 export async function validateAdminSession(token: string) {
   try {
-    const res = await fetch('/api/auth/session', { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(apiUrl('/api/auth/session'), { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) return { authenticated: false, networkError: false };
     return await res.json();
   } catch {
@@ -292,7 +335,7 @@ export async function validateAdminSession(token: string) {
 }
 
 export async function refreshAdminSession(refreshToken: string) {
-  const res = await fetch('/api/auth/refresh', {
+  const res = await fetch(apiUrl('/api/auth/refresh'), {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refresh_token: refreshToken }),
   });
@@ -437,18 +480,24 @@ export async function createPlayerApi(player: Player): Promise<Player> {
 }
 
 export async function updatePlayerApi(id: string, updates: Partial<Player>): Promise<void> {
+  const baseVersion = await getLocalRecordVersion('players', id);
+  const mutationBody: any = { ...updates, _ifc_base_version: baseVersion };
   const localApply = async () => { await mutateLocal<Player[]>('players', (current) => (current || []).map((p) => p.id === id ? ({ ...p, ...updates } as Player) : p)); };
   await withOfflineMutation({
-    method: 'PUT', url: `/api/players/${id}`, body: updates, online: async () => {
-      const res = await authorizedFetch(`/api/players/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) }); await assertApiOk(res, 'تعذر تعديل بيانات اللاعب');
+    method: 'PUT', url: `/api/players/${id}`, body: mutationBody, online: async () => {
+      const res = await authorizedFetch(`/api/players/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mutationBody) }); await assertApiOk(res, 'تعذر تعديل بيانات اللاعب');
+      const result = await res.json().catch(() => null);
+      if (result?.player) await mutateLocal<Player[]>('players', (current) => (current || []).map((p) => p.id === id ? result.player : p));
     }, localResult: undefined, localApply,
   });
 }
 
 export async function deletePlayerApi(id: string): Promise<void> {
+  const baseVersion = await getLocalRecordVersion('players', id);
+  const body = { _ifc_base_version: baseVersion };
   const localApply = async () => { await mutateLocal<Player[]>('players', (current) => (current || []).filter((p) => p.id !== id)); };
-  await withOfflineMutation({ method: 'DELETE', url: `/api/players/${id}`, online: async () => {
-    const res = await authorizedFetch(`/api/players/${id}`, { method: 'DELETE' }); await assertApiOk(res, 'تعذر حذف اللاعب');
+  await withOfflineMutation({ method: 'DELETE', url: `/api/players/${id}`, body, online: async () => {
+    const res = await authorizedFetch(`/api/players/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await assertApiOk(res, 'تعذر حذف اللاعب');
   }, localResult: undefined, localApply });
 }
 
@@ -523,12 +572,16 @@ export async function createCoachApi(coach: Coach): Promise<Coach> {
   return result;
 }
 export async function updateCoachApi(id: string, updates: Partial<Coach>): Promise<void> {
+  const baseVersion = await getLocalRecordVersion('coaches', id);
+  const mutationBody: any = { ...updates, _ifc_base_version: baseVersion };
   const localApply = async () => { await mutateLocal<Coach[]>('coaches', (current) => (current || []).map((c) => c.id === id ? ({ ...c, ...updates } as Coach) : c)); };
-  await withOfflineMutation({ method: 'PUT', url: `/api/coaches/${id}`, body: updates, online: async () => { const res = await authorizedFetch(`/api/coaches/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) }); await assertApiOk(res, 'تعذر تعديل بيانات المدرب'); }, localResult: undefined, localApply });
+  await withOfflineMutation({ method: 'PUT', url: `/api/coaches/${id}`, body: mutationBody, online: async () => { const res = await authorizedFetch(`/api/coaches/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mutationBody) }); await assertApiOk(res, 'تعذر تعديل بيانات المدرب'); const result = await res.json().catch(() => null); if (result?.coach) await mutateLocal<Coach[]>('coaches', (current) => (current || []).map((c) => c.id === id ? result.coach : c)); }, localResult: undefined, localApply });
 }
 export async function deleteCoachApi(id: string): Promise<void> {
+  const baseVersion = await getLocalRecordVersion('coaches', id);
+  const body = { _ifc_base_version: baseVersion };
   const localApply = async () => { await mutateLocal<Coach[]>('coaches', (current) => (current || []).filter((c) => c.id !== id)); };
-  await withOfflineMutation({ method: 'DELETE', url: `/api/coaches/${id}`, online: async () => { const res = await authorizedFetch(`/api/coaches/${id}`, { method: 'DELETE' }); await assertApiOk(res, 'تعذر حذف المدرب'); }, localResult: undefined, localApply });
+  await withOfflineMutation({ method: 'DELETE', url: `/api/coaches/${id}`, body, online: async () => { const res = await authorizedFetch(`/api/coaches/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await assertApiOk(res, 'تعذر حذف المدرب'); }, localResult: undefined, localApply });
 }
 
 // ----------------- SETTINGS -----------------
@@ -583,50 +636,40 @@ export async function deleteMonthlyArchiveApi(id: string): Promise<void> {
 }
 
 
-// ----------------- MICROSOFT EXCEL ONLINE / ONEDRIVE -----------------
-export async function getExcelOnlineStatus(): Promise<any> {
-  const res = await authorizedFetch('/api/excel/status');
-  if (!res.ok) throw await readApiError(res, 'تعذر قراءة حالة Excel Online');
-  return res.json();
+// ----------------- V15 SYSTEM CENTER -----------------
+export async function fetchSystemHealth() {
+  const res = await authorizedFetch('/api/system/health');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'تعذر فحص صحة النظام');
+  return data;
 }
-export function startExcelOnlineConnect(email?: string) {
-  const qs = email?.trim() ? `?email=${encodeURIComponent(email.trim())}` : '';
-  window.location.assign(`/api/excel/connect${qs}`);
+export async function fetchAuditLog(limit = 100) {
+  const res = await authorizedFetch(`/api/system/audit?limit=${Math.min(500, Math.max(1, limit))}`);
+  const data = await res.json().catch(() => []);
+  if (!res.ok) throw new Error(data?.error || 'تعذر قراءة سجل العمليات');
+  return data;
 }
-export async function listExcelOnlineWorkbooks(): Promise<any[]> {
-  const res = await authorizedFetch('/api/excel/workbooks');
-  if (!res.ok) throw await readApiError(res, 'تعذر قراءة ملفات Excel من OneDrive');
-  return res.json();
+export async function fetchTrash() {
+  const res = await authorizedFetch('/api/system/trash');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'تعذر قراءة سلة المحذوفات');
+  return data;
 }
-export async function selectExcelOnlineWorkbook(itemId: string): Promise<any> {
-  const res = await authorizedFetch('/api/excel/workbook/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ itemId }) });
-  if (!res.ok) throw await readApiError(res, 'تعذر اختيار ملف Excel');
-  return res.json();
+export async function restoreTrashItem(entity: string, id: string) {
+  const res = await authorizedFetch(`/api/system/trash/${encodeURIComponent(entity)}/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'تعذر استرجاع العنصر');
+  return data;
 }
-export async function createExcelOnlineWorkbook(name = 'IFC_Academy.xlsx'): Promise<any> {
-  const res = await authorizedFetch('/api/excel/workbook/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-  if (!res.ok) throw await readApiError(res, 'تعذر إنشاء ملف Excel');
-  return res.json();
+export async function permanentlyDeleteTrashItem(entity: string, id: string) {
+  const res = await authorizedFetch(`/api/system/trash/${encodeURIComponent(entity)}/${encodeURIComponent(id)}/permanent`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'تعذر الحذف النهائي');
+  return data;
 }
-export async function syncExcelOnlineApi(direction: 'auto' | 'system_to_excel' | 'excel_to_system' = 'auto'): Promise<any> {
-  const res = await authorizedFetch('/api/excel/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ direction }) });
-  if (!res.ok) throw await readApiError(res, 'تعذر مزامنة Excel Online');
-  return res.json();
-}
-export async function downloadExcelOnlineApi(): Promise<{ blob: Blob; name: string }> {
-  const res = await authorizedFetch('/api/excel/download');
-  if (!res.ok) throw await readApiError(res, 'تعذر تنزيل ملف Excel');
-  const disposition = res.headers.get('content-disposition') || '';
-  const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
-  return { blob: await res.blob(), name: match?.[1] ? decodeURIComponent(match[1]) : 'IFC_Academy.xlsx' };
-}
-export async function uploadExcelOnlineApi(file: File): Promise<any> {
-  const base64 = await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onerror = () => reject(r.error); r.onload = () => resolve(String(r.result || '')); r.readAsDataURL(file); });
-  const res = await authorizedFetch('/api/excel/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base64 }) });
-  if (!res.ok) throw await readApiError(res, 'تعذر رفع ملف Excel');
-  return res.json();
-}
-export async function disconnectExcelOnlineApi(): Promise<void> {
-  const res = await authorizedFetch('/api/excel/disconnect', { method: 'POST' });
-  if (!res.ok) throw await readApiError(res, 'تعذر فصل Excel Online');
+export async function fetchDateRangeReport(from: string, to: string) {
+  const res = await authorizedFetch(`/api/reports/range?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'تعذر إنشاء التقرير');
+  return data;
 }
