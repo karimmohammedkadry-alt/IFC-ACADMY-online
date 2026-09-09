@@ -16,9 +16,9 @@
 
 ## تفعيل Supabase
 ضع القيم التالية في `.env` أو متغيرات بيئة Railway: 
-`VITE_SUPABASE_URL`
-`VITE_SUPABASE_PUBLISHABLE_KEY`
-`VITE_SUPABASE_AUTH_EMAIL`
+`SUPABASE_URL`
+`SUPABASE_PUBLISHABLE_KEY`
+`SUPABASE_AUTH_EMAIL`
 
 ثم شغّل migration الموجود في `supabase/migrations/001_ifc_academy_cloud_sync.sql` إذا لم يكن جدول `academy_cloud_state` موجودًا.
 

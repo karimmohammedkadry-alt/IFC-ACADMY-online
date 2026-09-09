@@ -1,9 +1,13 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { getDb, nowIso } from './localDb';
 
-const URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
-const AUTH_EMAIL = import.meta.env.VITE_SUPABASE_AUTH_EMAIL as string | undefined;
+declare const __IFC_SUPABASE_URL__: string;
+declare const __IFC_SUPABASE_PUBLISHABLE_KEY__: string;
+declare const __IFC_SUPABASE_AUTH_EMAIL__: string;
+
+const URL = __IFC_SUPABASE_URL__ || undefined;
+const KEY = __IFC_SUPABASE_PUBLISHABLE_KEY__ || undefined;
+const AUTH_EMAIL = __IFC_SUPABASE_AUTH_EMAIL__ || undefined;
 const META_ID = 1;
 const TABLES = ['players','player_sessions','payments','expenses','coaches','academy_settings','monthly_archives','recycle_bin','app_notifications'];
 let client: SupabaseClient | null = null;
@@ -13,6 +17,7 @@ let passwordQueuePromise: Promise<void> | null = null;
 export type CloudSyncResult = { status:'synced'|'pulled'|'pushed'|'offline'|'not_configured'|'error'; message:string; remoteUpdatedAt?:string };
 function configured(){ return Boolean(URL && KEY && AUTH_EMAIL); }
 export function isCloudSyncConfigured(){ return configured(); }
+export function getCloudSyncConfigStatus(){ return { configured: configured(), hasUrl: Boolean(URL), hasPublishableKey: Boolean(KEY), authEmail: AUTH_EMAIL || '' }; }
 export function isNetworkError(error:any){ const status=Number(error?.status||error?.statusCode||0); const msg=String(error?.message||'').toLowerCase(); return !status || /network|fetch|failed to fetch|offline|load failed|timeout|connection/.test(msg); }
 function getClient(){ if(!configured()) return null; if(!client)client=createClient(URL!,KEY!,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}}); return client; }
 export async function getCloudAuthUser(){const sb=getClient();if(!sb)return null;const {data,error}=await sb.auth.getUser();if(error)throw error;return data.user||null;}
@@ -60,7 +65,7 @@ export async function syncCloud(localPassword?:string):Promise<CloudSyncResult>{
     const sb=getClient()!;
     let session=(await sb.auth.getSession()).data.session;
     if(!session&&localPassword){try{session=await cloudLogin(localPassword);}catch(e){if(!isNetworkError(e))throw new Error(`Cloud Auth: ${(e as any)?.message||'تعذر تسجيل الدخول للسحابة.'}`);return{status:'offline',message:'تعذر الوصول إلى Supabase؛ سيستمر التطبيق محليًا.'};}}
-    if(!session)throw new Error('جلسة Supabase غير موجودة.');
+    if(!session)throw new Error('جلسة Supabase غير موجودة. سجّل الدخول مرة واحدة أثناء الاتصال بالإنترنت حتى تُنشأ جلسة المزامنة.');
     const db=await ensureMeta();
     const local=await snapshot();
     const localHash=await hashText(JSON.stringify(local));
