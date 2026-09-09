@@ -3,6 +3,7 @@ import {
   X,
   Bell,
   Send,
+  MessageCircle,
   AlertTriangle,
   CheckCircle,
   Clock,
@@ -414,8 +415,8 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
                       )}
                       {matchedPlayer && matchedPlayer.parentPhone && (
                         <button type="button" onClick={() => handleSendWhatsApp(matchedPlayer)} className="px-2.5 py-1 bg-emerald-600/80 hover:bg-emerald-600 text-white font-semibold rounded-lg text-xs transition-all cursor-pointer flex items-center gap-1">
-                          <Send className="w-3 h-3" />
-                          <span>إرسال واتساب</span>
+                          <MessageCircle className="w-3 h-3" />
+                          <span>إرسال رسالة ولي الأمر</span>
                         </button>
                       )}
                     </div>
