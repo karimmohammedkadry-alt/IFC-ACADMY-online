@@ -3,7 +3,7 @@ import { User, KeyRound, AlertCircle, Eye, EyeOff, ShieldCheck } from 'lucide-re
 import { IFCLogo } from './IFCLogo';
 
 interface LoginScreenProps {
-  onLogin: (user: { name: string; role: string; avatar: string; email?: string; username?: string }, token: string, refreshToken?: string, expiresAt?: number, password?: string) => void;
+  onLogin: (user: { name: string; role: string; avatar: string; email?: string; username?: string }, token: string, refreshToken?: string, expiresAt?: number) => void;
   authenticate: (username: string, password: string) => Promise<{ token: string; access_token?: string; refresh_token?: string; expires_at?: number; user: { name: string; role: string; avatar: string; username: string } }>;
 }
 
@@ -19,7 +19,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, authenticate 
 
     try {
       const result = await authenticate(username.trim(), password);
-      onLogin(result.user, result.access_token || result.token, result.refresh_token, result.expires_at, password);
+      onLogin(result.user, result.access_token || result.token, result.refresh_token, result.expires_at);
     } catch (error: any) {
       setErrorMessage(error?.message || 'بيانات الدخول غير صحيحة. يرجى التحقق من اسم المستخدم وكلمة المرور.');
     }

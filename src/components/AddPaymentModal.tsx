@@ -115,9 +115,7 @@ export const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
       return;
     }
 
-    const coverageStart = selectedPlayer.subscriptionEndDate && new Date(selectedPlayer.subscriptionEndDate) > new Date() ? selectedPlayer.subscriptionEndDate : new Date().toISOString().split('T')[0];
-    const autoPeriod = `${new Date(coverageStart).toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' })}${durationMonths > 1 ? ` - ${new Date(projectedEndDate).toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' })}` : ''}`;
-    const finalPeriod = periodMonth.trim() && !periodMonth.startsWith('اشتراك ') ? periodMonth.trim() : autoPeriod;
+    const finalPeriod = periodMonth.trim() || `اشتراك ${durationMonths} شهر`;
 
     const newPayment: PaymentRecord = {
       id: `pay-${Date.now()}`,
@@ -132,11 +130,6 @@ export const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
       date: new Date().toISOString().split('T')[0],
       createdAt: new Date().toISOString(),
       periodMonth: finalPeriod,
-      coverageStart,
-      coverageEnd: projectedEndDate,
-      durationMonths,
-      dueAmount: (selectedPlayer.monthlyFee || 0) * durationMonths,
-      remainingAmount: Math.max(0, (selectedPlayer.monthlyFee || 0) * durationMonths - numericAmount),
       status: 'مدفوع',
       notes: notes.trim() || `سداد ${finalPeriod} - تجديد حتى ${projectedEndDate}`,
       collectedBy: cashierName || 'مسؤول الخزينة',

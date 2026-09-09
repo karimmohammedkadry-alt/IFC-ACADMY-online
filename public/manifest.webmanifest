@@ -1,0 +1,15 @@
+{
+  "name": "IFC Academy",
+  "short_name": "IFC Academy",
+  "description": "نظام إدارة أكاديمية IFC - Online / Offline",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "icons": [
+    { "src": "/ifc_logo.jpg", "sizes": "any", "type": "image/jpeg", "purpose": "any maskable" }
+  ]
+}

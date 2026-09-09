@@ -111,18 +111,6 @@ export const FinanceView: React.FC<FinanceViewProps> = ({
   const totalExpenses = monthExpenses.reduce((s, e) => s + e.amount, 0);
   const netProfit = totalIncome - totalExpenses;
 
-  const lastSixMonths = useMemo(() => {
-    const arr: { key: string; label: string; income: number; expense: number }[] = [];
-    const base = new Date();
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
-      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-      arr.push({ key, label: d.toLocaleDateString('ar-EG',{month:'short'}), income: payments.filter(p=>p.date?.startsWith(key)).reduce((a,p)=>a+p.amount,0), expense: expenses.filter(e=>e.date?.startsWith(key)).reduce((a,e)=>a+e.amount,0) });
-    }
-    return arr;
-  }, [payments, expenses]);
-  const chartMax = Math.max(1, ...lastSixMonths.flatMap(m => [m.income, m.expense]));
-
   // Calculate salaries specific stats
   const totalMonthlyBudgetSalaries = coaches.reduce((s, c) => s + c.monthlySalary, 0);
   const salaryExpenses = monthExpenses.filter((e) => e.category === 'رواتب مدربين');

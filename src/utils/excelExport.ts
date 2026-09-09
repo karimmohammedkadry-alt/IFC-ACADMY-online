@@ -21,7 +21,7 @@ export function exportToExcel(
   // Wider columns prevent Excel from displaying dates/numbers as ####.
   worksheet['!cols'] = headers.map((header, index) => {
     const values = [header, ...normalizedRows.map((row) => row[index] ?? '')];
-    const maxLen = Math.max(0, ...values.map((value) => String(value).length));
+    const maxLen = values.reduce((max, value) => Math.max(max, String(value).length), 0);
     const base = isDateHeader(header) ? 16 : isTextLikeHeader(header) ? 18 : 14;
     return { wch: Math.min(42, Math.max(base, maxLen + 2)) };
   });

@@ -64,7 +64,9 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
 }) => {
   const unreadCount = notifications.filter((n) => !n.read).length;
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeFilter, setActiveFilter] = useState<'all' | 'trash'>('all');
+  const [activeFilter, setActiveFilter] = useState<
+    'all' | 'subscriptions' | 'players' | 'coaches' | 'finance' | 'trash'
+  >('all');
 
   useEffect(() => {
     if (isOpen) onMarkAllAsRead();
@@ -72,9 +74,15 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
 
   if (!isOpen) return null;
 
-  // Unified inbox: every notification category is intentionally merged into 'الكل'. Only 'سلة المهملات' is a separate view.
+  // Filter notifications based on active tab
   const filteredNotifications = notifications.filter((notif) => {
-    if (activeFilter === 'trash') return false;
+    let matchesTab = true;
+    if (activeFilter === 'subscriptions') matchesTab = notif.category === 'subscriptions';
+    else if (activeFilter === 'players') matchesTab = notif.category === 'players';
+    else if (activeFilter === 'coaches') matchesTab = notif.category === 'coaches';
+    else if (activeFilter === 'finance') matchesTab = notif.category === 'finance' || notif.type === 'subscription_renewed' || notif.type === 'salary_paid';
+    else if (activeFilter === 'trash') matchesTab = false;
+    if (!matchesTab) return false;
     const q = normalizeSearchText(searchQuery);
     if (!q) return true;
     const player = notif.meta?.playerId ? players.find((p) => p.id === notif.meta?.playerId) : undefined;
@@ -192,7 +200,7 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
           </button>
         </div>
 
-        {/* Unified inbox tabs: only All + Trash */}
+        {/* Filter Tabs / Categories */}
         <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-3 scrollbar-none shrink-0 text-xs">
           <button
             type="button"
@@ -207,6 +215,55 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
           </button>
           <button
             type="button"
+            onClick={() => setActiveFilter('subscriptions')}
+            className={`flex items-center gap-1 px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeFilter === 'subscriptions'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] hover:text-white border border-white/10'
+            }`}
+          >
+            <Flame className="w-3.5 h-3.5 text-amber-400" />
+            <span>تنبيهات التجديد</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/20">
+              {expiringInWeekPlayers.length + overduePlayers.length}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveFilter('players')}
+            className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeFilter === 'players'
+                ? 'bg-sky-500 text-slate-950 shadow-md shadow-sky-500/20'
+                : 'bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] hover:text-white border border-white/10'
+            }`}
+          >
+            عمليات اللاعبين
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveFilter('coaches')}
+            className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeFilter === 'coaches'
+                ? 'bg-purple-500 text-slate-950 shadow-md shadow-purple-500/20'
+                : 'bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] hover:text-white border border-white/10'
+            }`}
+          >
+            المدربين
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveFilter('finance')}
+            className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeFilter === 'finance'
+                ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                : 'bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] hover:text-white border border-white/10'
+            }`}
+          >
+            المالية والرواتب
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveFilter('trash')}
             className={`flex items-center gap-1 px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition-all cursor-pointer ${
               activeFilter === 'trash'
@@ -219,14 +276,14 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
             <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/20">{notificationTrash.length}</span>
           </button>
 
-          {/* Active inbox actions */}
+          {/* Clean / Clear Actions */}
           <div className="mr-auto flex items-center gap-1">
             {notifications.length > 0 && (
               <button
                 type="button"
                 onClick={onClearAll}
                 className="text-[11px] text-slate-400 hover:text-rose-400 px-2 py-1 rounded-lg hover:bg-rose-500/10 transition-colors flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                title="مسح الإشعارات من الوارد"
+                title="مسح كافة الإشعارات المسجلة"
               >
                 <Trash2 className="w-3 h-3" />
                 <span className="hidden sm:inline">مسح السجل</span>
@@ -237,7 +294,7 @@ export const UnifiedNotificationsModal: React.FC<UnifiedNotificationsModalProps>
 
         {/* Dynamic Alert Banner if there are subscriptions expiring or overdue */}
         {(expiringInWeekPlayers.length > 0 || overduePlayers.length > 0) &&
-          activeFilter === 'all' && (
+          (activeFilter === 'all' || activeFilter === 'subscriptions') && (
             <div className="mb-3 p-3 rounded-xl bg-gradient-to-r from-amber-500/15 via-yellow-500/10 to-rose-500/15 border border-yellow-500/30 text-xs text-yellow-200 shrink-0 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Flame className="w-4 h-4 text-amber-400 shrink-0 animate-pulse" />

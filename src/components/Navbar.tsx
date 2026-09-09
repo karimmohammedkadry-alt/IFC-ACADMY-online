@@ -10,7 +10,6 @@ import {
   Settings,
   Bell,
   LogOut,
-  Trash2,
 } from 'lucide-react';
 import { PageTab } from '../types';
 import { IFCLogo } from './IFCLogo';
@@ -51,7 +50,6 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'reports', label: 'التقارير', icon: <FileText className="w-4 h-4" /> },
     { id: 'coaches', label: 'المدربين', icon: <Award className="w-4 h-4" /> },
     { id: 'settings', label: 'الإعدادات', icon: <Settings className="w-4 h-4" /> },
-    { id: 'trash', label: 'سلة المهملات', icon: <Trash2 className="w-4 h-4" /> },
   ];
 
   return (

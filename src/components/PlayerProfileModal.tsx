@@ -8,12 +8,13 @@ import {
   Award,
   CheckCircle2,
   XCircle,
+  Clock,
   ExternalLink,
   Edit3,
   Receipt,
   FileText,
 } from 'lucide-react';
-import { Player, PaymentRecord, MonthlyArchiveRecord, SessionRecord } from '../types';
+import { Player, PaymentRecord } from '../types';
 import { formatDateTimeArabic } from '../utils/dateUtils';
 
 interface PlayerProfileModalProps {
@@ -24,7 +25,6 @@ interface PlayerProfileModalProps {
   onEditPlayer: (player: Player) => void;
   onOpenPaymentForPlayer: (player: Player) => void;
   isAmountsVisible?: boolean;
-  monthlyArchives?: MonthlyArchiveRecord[];
 }
 
 export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
@@ -35,7 +35,6 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
   onEditPlayer,
   onOpenPaymentForPlayer,
   isAmountsVisible = true,
-  monthlyArchives = [],
 }) => {
   if (!isOpen || !player) return null;
 
@@ -45,14 +44,7 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
       p.playerName.trim().toLowerCase() === player.name.trim().toLowerCase()
   );
 
-  const archivedPayments = monthlyArchives.flatMap((a) => (a.payments || []).filter((p) => p.playerId === player.id || (p.playerName || '').trim().toLowerCase() === player.name.trim().toLowerCase()).map((p) => ({ ...p, __month: a.monthLabel })));
-  const archivedAttendance: Array<SessionRecord & { __month: string }> = monthlyArchives.flatMap((a) => (a.attendance || []).filter((s: any) => s.playerId === player.id).map((s: any) => ({ ...s, __month: a.monthLabel })));
-  const allPlayerPayments = [...playerPayments, ...archivedPayments.filter((ap) => !playerPayments.some((p) => p.id === ap.id))];
-  const totalPaid = allPlayerPayments.reduce((sum, p) => sum + p.amount, 0);
-  const subscriptionPayments = allPlayerPayments.filter((p) => p.type !== 'راتب مدرب');
-  const renewals = subscriptionPayments.filter((p) => p.coverageStart || p.coverageEnd || p.durationMonths || p.periodMonth);
-  const allPlayerAttendance = [...(player.sessions || []), ...archivedAttendance.filter((as) => !(player.sessions || []).some((s) => s.id === as.id))];
-
+  const totalPaid = playerPayments.reduce((sum, p) => sum + p.amount, 0);
 
   const formatMoney = (amount: number) => {
     if (!isAmountsVisible) return '•••• ج.م';
@@ -194,15 +186,19 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
             </div>
           </div>
 
-          {/* Total Paid */}
+          {/* Total Paid in Academy */}
           <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10">
             <span className="text-[11px] text-slate-400 block mb-1 flex items-center gap-1.5">
               <CreditCard className="w-3.5 h-3.5 text-emerald-400" />
-              <span>إجمالي مدفوعات اللاعب</span>
+              <span>إجمالي المسدد بسجلات الأكاديمية</span>
             </span>
-            <div className="text-sm font-black text-emerald-400 font-mono mt-0.5">{formatMoney(totalPaid)} <span className="text-[11px] text-slate-400 font-normal">({subscriptionPayments.length} سداد)</span></div>
+            <div className="text-sm font-black text-emerald-400 font-mono mt-0.5">
+              {formatMoney(totalPaid)}
+              <span className="text-[11px] text-slate-400 font-normal mr-1.5">
+                ({playerPayments.length} إيصال)
+              </span>
+            </div>
           </div>
-
         </div>
 
         {/* Attendance Statistics */}
@@ -331,34 +327,6 @@ export const PlayerProfileModal: React.FC<PlayerProfileModalProps> = ({
               </div>
             )}
           </div>
-        </div>
-
-        {/* Archived history: remains visible after monthly reset */}
-        <div className="mb-5 p-4 rounded-xl bg-amber-500/[0.04] border border-amber-500/15">
-          <h4 className="text-xs font-bold text-white mb-3 flex items-center gap-2"><Calendar className="w-4 h-4 text-amber-400" /><span>السجل المؤرشف للاعب</span></h4>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs mb-3">
-            <div className="p-2 rounded-lg bg-white/[0.03]"><span className="text-slate-400">مدفوعات مؤرشفة</span><div className="font-bold text-emerald-400 mt-1">{archivedPayments.length}</div></div>
-            <div className="p-2 rounded-lg bg-white/[0.03]"><span className="text-slate-400">حضور مؤرشف</span><div className="font-bold text-blue-400 mt-1">{archivedAttendance.filter(s => s.status === 'حاضر').length}</div></div>
-            <div className="p-2 rounded-lg bg-white/[0.03]"><span className="text-slate-400">غياب مؤرشف</span><div className="font-bold text-rose-400 mt-1">{archivedAttendance.filter(s => s.status === 'غائب').length}</div></div>
-          </div>
-          {archivedAttendance.length > 0 ? <div className="max-h-28 overflow-y-auto text-[10px] text-slate-300 space-y-1">{archivedAttendance.slice().sort((a,b)=>a.date<b.date?1:-1).map((s,i)=><div key={`${s.id}-${i}`} className="flex justify-between border-b border-white/5 pb-1"><span>{s.date} · {s.__month}</span><span className={s.status==='غائب'?'text-rose-300':s.status==='بعذر'?'text-amber-300':'text-emerald-300'}>{s.status}</span></div>)}</div> : <div className="text-[10px] text-slate-500">لا يوجد حضور مؤرشف لهذا اللاعب.</div>}
-        </div>
-
-        {/* Renewals History */}
-        <div className="mb-5">
-          <h4 className="text-xs font-bold text-white mb-2.5 flex items-center gap-1.5"><Calendar className="w-4 h-4 text-blue-400" /><span>سجل التجديدات والفترات المسددة</span></h4>
-          {renewals.length === 0 ? (
-            <div className="p-4 rounded-xl bg-white/[0.02] border border-white/5 text-center text-xs text-slate-400">لا توجد عمليات تجديد مسجلة بعد.</div>
-          ) : (
-            <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-              {renewals.map((pay) => (
-                <div key={pay.id} className="p-2.5 rounded-xl bg-blue-500/[0.04] border border-blue-500/10 flex items-center justify-between text-xs">
-                  <div><div className="font-bold text-white">{pay.periodMonth}</div><div className="text-[10px] text-slate-400 mt-1">من {pay.coverageStart || '—'} إلى {pay.coverageEnd || '—'} · {pay.durationMonths || 1} شهر · إيصال {pay.invoiceNumber}</div></div>
-                  <div className="text-left"><div className="font-mono font-bold text-emerald-400">{formatMoney(pay.amount)}</div></div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* Recent Payments History */}

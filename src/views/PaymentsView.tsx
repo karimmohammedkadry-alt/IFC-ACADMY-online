@@ -143,7 +143,6 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
       pay.method,
       formatDateTimeArabic(pay.createdAt || pay.date),
       pay.periodMonth,
-      pay.remainingAmount || 0,
       pay.collectedBy,
       pay.status || 'مدفوع',
       pay.notes || '',
@@ -321,8 +320,6 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
         </div>
       </div>
 
-      <div className="p-3.5 rounded-xl bg-blue-500/[0.05] border border-blue-500/15 text-[11px] text-slate-300">🔐 حماية التحصيل: رقم الإيصال فريد داخل قاعدة SQLite، لا يُسمح بمبلغ ≤ 0، وكل سداد اشتراك يجب أن يكون مربوطًا بلاعب. يظهر الشهر/الفترة المسددة والمتبقي وإجمالي مدفوعات اللاعب داخل ملفه الشخصي.</div>
-
       {/* Filters & Search */}
       <div className="bg-white/[0.04] backdrop-blur-md border border-white/10 rounded-2xl p-4 shadow-xl shadow-black/20">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -407,7 +404,6 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                 <th className="py-3 px-4">المستفيد / اللاعب / المدرب</th>
                 <th className="py-3 px-3">النوع</th>
                 <th className="py-3 px-3">المبلغ</th>
-                <th className="py-3 px-3">المتبقي</th>
                 <th className="py-3 px-3">طريقة الدفع</th>
                 <th className="py-3 px-3">التاريخ</th>
                 <th className="py-3 px-3">عن شهر</th>
@@ -418,7 +414,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
             <tbody className="divide-y divide-white/5">
               {filteredPayments.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-12 text-center text-slate-400">
+                  <td colSpan={9} className="py-12 text-center text-slate-400">
                     لا توجد معاملات مسجلة حالياً
                   </td>
                 </tr>
@@ -468,9 +464,6 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                           {formatMoney(pay.amount)}
                         </span>
                       </td>
-
-                      {/* Remaining */}
-                      <td className="py-3 px-3 font-mono text-xs"><span className={pay.remainingAmount ? 'text-amber-400' : 'text-emerald-400'}>{formatMoney(pay.remainingAmount || 0)}</span></td>
 
                       {/* Method */}
                       <td className="py-3 px-3 text-slate-300">{pay.method}</td>

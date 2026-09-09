@@ -1,0 +1,7 @@
+{
+  "supabaseUrl": "https://YOUR-PROJECT.supabase.co",
+  "supabaseServiceRoleKey": "YOUR_SUPABASE_SERVICE_ROLE_KEY",
+  "dataDir": "C:\\IFC_ACADEMY_DATA",
+  "intervalSeconds": 60,
+  "keepDailyBackups": 30
+}

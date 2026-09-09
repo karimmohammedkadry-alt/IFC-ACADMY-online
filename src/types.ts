@@ -8,8 +8,7 @@ export type PageTab =
   | 'finance' 
   | 'reports' 
   | 'coaches' 
-  | 'settings'
-  | 'trash';
+  | 'settings';
 
 export type PaymentMethod = 'كاش' | 'فودافون كاش' | 'بطاقة ائتمانية' | 'إنستاباي' | 'تحويل بنكي';
 
@@ -80,12 +79,7 @@ export interface PaymentRecord {
   method: PaymentMethod;
   date: string; // YYYY-MM-DD used for day filters
   createdAt?: string; // ISO timestamp: day/month/year + hour/minute/second
-  periodMonth: string; // الشهر/الفترة التي يغطيها السداد
-  coverageStart?: string;
-  coverageEnd?: string;
-  durationMonths?: number;
-  dueAmount?: number;
-  remainingAmount?: number;
+  periodMonth: string; // مايو 2024
   status: 'مدفوع' | 'معلق' | 'مسترجع';
   notes?: string;
   collectedBy: string; // أمين الصندوق / مسؤول الخزينة
@@ -151,11 +145,6 @@ export interface MonthlyArchiveRecord {
   overduePlayersCount?: number;
   payments?: PaymentRecord[];
   expenses?: ExpenseRecord[];
-  attendance?: SessionRecord[];
-  attendanceCount?: number;
-  presentCount?: number;
-  absentCount?: number;
-  excusedCount?: number;
   notes?: string;
 }
 
@@ -171,9 +160,7 @@ export type NotificationType =
   | 'subscription_one_session_left'
   | 'subscription_overdue'
   | 'salary_paid'
-  | 'expense_added'
-  | 'system'
-  | 'other';
+  | 'expense_added';
 
 export interface AppNotification {
   id: string;
